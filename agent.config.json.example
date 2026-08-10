@@ -1,0 +1,6 @@
+{
+  "enabled": true,
+  "base_url": "https://your-openai-compatible-endpoint/v1",
+  "api_key": "sk-...",
+  "model": "your-vision-capable-model"
+}

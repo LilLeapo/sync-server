@@ -1,0 +1,1227 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>群聊捕获 · Viewer</title>
+<style>
+  :root {
+    --bg: #eef0f3;
+    --sidebar: #f8f9fa;
+    --card: #ffffff;
+    --ink: #1a1c1e;
+    --muted: #878b92;
+    --faint: #b6bac1;
+    --line: rgba(26, 28, 30, 0.09);
+    --accent: #07c160;
+    --accent-ink: #059748;
+    --accent-soft: rgba(7, 193, 96, 0.12);
+    --danger: #e6432d;
+    --chip: rgba(26, 28, 30, 0.06);
+    --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141517;
+      --sidebar: #1b1d20;
+      --card: #24262b;
+      --ink: #e8e9eb;
+      --muted: #8a8e96;
+      --faint: #5b5f66;
+      --line: rgba(255, 255, 255, 0.09);
+      --accent: #0ad064;
+      --accent-ink: #2bd67c;
+      --accent-soft: rgba(10, 208, 100, 0.16);
+      --danger: #f26d5b;
+      --chip: rgba(255, 255, 255, 0.08);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font-family: var(--sans);
+    color: var(--ink);
+    background: var(--bg);
+    -webkit-font-smoothing: antialiased;
+  }
+  button { font-family: inherit; }
+
+  #app { display: grid; grid-template-columns: 290px 1fr; height: 100dvh; }
+
+  /* ---------- 侧边栏 ---------- */
+  .sidebar {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    background: var(--sidebar);
+    border-right: 1px solid var(--line);
+  }
+  .brand { padding: 18px 18px 14px; border-bottom: 1px solid var(--line); }
+  .brand__row { display: flex; align-items: center; gap: 9px; }
+  .brand__row h1 { margin: 0; font-size: 16px; font-weight: 700; letter-spacing: 0.3px; }
+  .dot {
+    width: 9px; height: 9px; border-radius: 50%;
+    background: var(--faint);
+    transition: background 0.3s;
+    flex: 0 0 auto;
+  }
+  .dot.on { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .brand__sub { margin-top: 5px; font: 11px var(--mono); color: var(--muted); }
+
+  .side-search { padding: 12px 14px 6px; }
+  .side-search input {
+    width: 100%;
+    padding: 8px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: var(--card);
+    color: var(--ink);
+    font: 13px var(--sans);
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  .side-search input::placeholder { color: var(--faint); }
+  .side-search input:focus { border-color: var(--accent); }
+
+  .rooms { flex: 1; overflow-y: auto; padding: 6px 8px 12px; }
+  .room {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 9px 10px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--ink);
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .room:hover { background: var(--chip); }
+  .room.active { background: var(--accent-soft); }
+  .room__name {
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font: 12px var(--mono);
+  }
+  .room.active .room__name { color: var(--accent-ink); font-weight: 600; }
+  .room__count { color: var(--muted); font: 11px var(--mono); }
+  .room__unread {
+    min-width: 17px; height: 17px; padding: 0 5px;
+    border-radius: 999px;
+    background: var(--accent);
+    color: #fff;
+    font: 700 10px var(--mono);
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+
+  .side-foot {
+    padding: 10px 14px;
+    border-top: 1px solid var(--line);
+    font: 11px var(--mono);
+    color: var(--muted);
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .side-foot span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* ---------- 主区 ---------- */
+  .main { display: flex; flex-direction: column; min-height: 0; position: relative; }
+  .bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 18px;
+    background: var(--card);
+    border-bottom: 1px solid var(--line);
+    flex-wrap: wrap;
+  }
+  .bar__title { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  .bar__title strong { font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bar__title span { font: 11px var(--mono); color: var(--muted); white-space: nowrap; }
+  .spacer { flex: 1; }
+
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: var(--chip);
+    font: 11px var(--mono);
+    color: var(--muted);
+  }
+
+  .btn {
+    padding: 6px 13px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: var(--card);
+    color: var(--ink);
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .btn:hover { background: var(--chip); }
+  .btn.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-ink); }
+  .btn.danger { color: var(--danger); }
+  .btn.danger:hover { border-color: var(--danger); }
+  .icon-btn {
+    display: none;
+    width: 32px; height: 32px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--card);
+    color: var(--ink);
+    font-size: 15px;
+    cursor: pointer;
+  }
+
+  .feed { flex: 1; overflow-y: auto; padding: 16px 20px 48px; }
+  .feed__empty {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    color: var(--faint);
+    text-align: center;
+    padding: 0 24px;
+  }
+  .feed__empty b { font-size: 15px; color: var(--muted); font-weight: 600; }
+  .feed__empty span { font-size: 12px; }
+
+  .load-earlier {
+    display: block;
+    margin: 0 auto 14px;
+    padding: 6px 16px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: var(--card);
+    color: var(--muted);
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .load-earlier:hover { color: var(--accent-ink); border-color: var(--accent); }
+  .load-earlier:disabled { opacity: 0.5; cursor: default; }
+
+  .date-sep {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 18px 0 10px;
+    color: var(--faint);
+    font: 11px var(--mono);
+  }
+  .date-sep::before, .date-sep::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+
+  .row { display: flex; gap: 10px; margin: 8px 0; }
+  .avatar {
+    flex: 0 0 34px;
+    width: 34px; height: 34px;
+    border-radius: 9px;
+    display: flex; align-items: center; justify-content: center;
+    color: #fff;
+    font: 700 14px var(--sans);
+    margin-top: 17px;
+    user-select: none;
+  }
+  .row__body { max-width: 660px; min-width: 0; }
+  .row__meta {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin: 1px 2px 4px;
+    font: 11px var(--mono);
+    color: var(--muted);
+  }
+  .row__sender { font-weight: 600; color: var(--ink); font-size: 12px; }
+  .row__room {
+    padding: 0 6px;
+    border-radius: 4px;
+    background: var(--chip);
+    font-size: 10px;
+  }
+
+  .bubble {
+    display: inline-block;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 4px 12px 12px 12px;
+    padding: 9px 13px;
+    font-size: 14px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .bubble a { color: var(--accent-ink); text-decoration: none; border-bottom: 1px solid var(--accent-soft); }
+  .bubble a:hover { border-bottom-color: var(--accent-ink); }
+  .bubble mark { background: rgba(255, 196, 0, 0.45); color: inherit; border-radius: 2px; padding: 0 1px; }
+
+  /* 图片卡片 */
+  .img-card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    overflow: hidden;
+    max-width: 420px;
+  }
+  .img-card img {
+    display: block;
+    width: 100%;
+    max-height: 420px;
+    object-fit: contain;
+    background: #101214;
+    cursor: zoom-in;
+  }
+  .img-card__meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 11px;
+    font: 11px var(--mono);
+    color: var(--muted);
+  }
+  .badge {
+    padding: 1px 7px;
+    border-radius: 999px;
+    font-size: 10px;
+    background: var(--accent-soft);
+    color: var(--accent-ink);
+  }
+  .badge.thumb { background: rgba(230, 145, 45, 0.15); color: #d07d1a; }
+  .img-missing {
+    padding: 34px 18px;
+    text-align: center;
+    color: var(--faint);
+    font: 12px var(--mono);
+    background: var(--chip);
+  }
+
+  /* 应用消息 / 占位卡片 */
+  .app-card {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    max-width: 420px;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 4px 12px 12px 12px;
+    padding: 10px 13px;
+  }
+  .app-card__icon {
+    flex: 0 0 36px;
+    width: 36px; height: 36px;
+    border-radius: 8px;
+    background: var(--accent-soft);
+    color: var(--accent-ink);
+    display: flex; align-items: center; justify-content: center;
+    font: 700 11px var(--sans);
+  }
+  .app-card__body { min-width: 0; }
+  .app-card__title { font-size: 13px; font-weight: 600; word-break: break-all; }
+  .app-card__sub { margin-top: 2px; font: 11px var(--mono); color: var(--muted); word-break: break-all; }
+
+  .jump {
+    position: absolute;
+    right: 22px; bottom: 20px;
+    padding: 8px 16px;
+    border: 0;
+    border-radius: 999px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 12px;
+    cursor: pointer;
+    box-shadow: 0 6px 18px rgba(7, 193, 96, 0.35);
+  }
+
+  /* 报价表格 */
+  .qtable {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    overflow: hidden;
+    font-size: 12.5px;
+    margin-bottom: 10px;
+  }
+  .qtable th, .qtable td {
+    padding: 7px 10px;
+    text-align: left;
+    border-bottom: 1px solid var(--line);
+    vertical-align: top;
+    word-break: break-word;
+  }
+  .qtable th { font: 600 11px var(--mono); color: var(--muted); background: var(--chip); white-space: nowrap; }
+  .qtable tr:last-child td { border-bottom: 0; }
+  .qtable td.mono { font-family: var(--mono); font-size: 11px; white-space: nowrap; }
+  .qtable td.qprice { font-weight: 700; color: var(--accent-ink); white-space: nowrap; }
+  .qtable td.qsum { max-width: 220px; color: var(--muted); }
+  .qimg { color: var(--accent-ink); cursor: zoom-in; text-decoration: none; border-bottom: 1px solid var(--accent-soft); }
+
+  /* ---------- 灯箱 ---------- */
+  .lightbox {
+    position: fixed; inset: 0;
+    background: rgba(10, 11, 12, 0.92);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 60;
+    padding: 28px;
+  }
+  .lightbox.open { display: flex; }
+  .lightbox img {
+    max-width: 94vw;
+    max-height: 90vh;
+    object-fit: contain;
+    border-radius: 6px;
+  }
+  .lightbox__close {
+    position: absolute;
+    top: 16px; right: 20px;
+    width: 38px; height: 38px;
+    border: 0;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.12);
+    color: #fff;
+    font-size: 18px;
+    cursor: pointer;
+  }
+
+  #scrim {
+    position: fixed; inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+    z-index: 40;
+  }
+
+  .token-gate {
+    position: fixed; inset: 0;
+    background: var(--bg);
+    z-index: 80;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .token-gate[hidden] { display: none; }
+  .token-gate__box {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    width: 300px;
+    padding: 28px;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    text-align: center;
+  }
+  .token-gate__box b { font-size: 16px; }
+  .token-gate__box span { font-size: 12px; color: var(--muted); }
+  .token-gate__box input {
+    padding: 9px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: var(--bg);
+    color: var(--ink);
+    font: 14px var(--mono);
+    outline: none;
+  }
+  .token-gate__box input:focus { border-color: var(--accent); }
+  .token-gate__box button {
+    padding: 9px 0;
+    border: 0;
+    border-radius: 8px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 14px;
+    cursor: pointer;
+  }
+
+  ::-webkit-scrollbar { width: 9px; height: 9px; }
+  ::-webkit-scrollbar-thumb { background: rgba(128, 132, 140, 0.35); border-radius: 999px; border: 2px solid transparent; background-clip: content-box; }
+
+  /* ---------- 窄屏：侧边栏抽屉 ---------- */
+  @media (max-width: 900px) {
+    #app { grid-template-columns: 1fr; }
+    .sidebar {
+      position: fixed;
+      top: 0; left: 0; bottom: 0;
+      width: 280px;
+      z-index: 50;
+      transform: translateX(-102%);
+      transition: transform 0.2s ease;
+      box-shadow: 0 0 40px rgba(0, 0, 0, 0.25);
+    }
+    .sidebar.open { transform: none; }
+    .icon-btn { display: block; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <div class="brand__row">
+        <span class="dot" id="brandDot"></span>
+        <h1>群聊捕获</h1>
+      </div>
+      <div class="brand__sub" id="brandStatus">连接中…</div>
+    </div>
+    <div class="side-search">
+      <input id="search" type="search" placeholder="搜索消息内容…" autocomplete="off" />
+    </div>
+    <nav class="rooms" id="roomList"></nav>
+    <div class="side-foot">
+      <span id="footStats">—</span>
+      <span id="footHost"></span>
+    </div>
+  </aside>
+  <div id="scrim" hidden></div>
+
+  <main class="main" id="main">
+    <header class="bar">
+      <button class="icon-btn" id="menuBtn" title="群聊列表">☰</button>
+      <div class="bar__title">
+        <strong id="roomTitle">全部群聊</strong>
+        <span id="roomCount">0 条消息</span>
+      </div>
+      <div class="spacer"></div>
+      <span class="pill"><span class="dot" id="liveDot"></span><span id="liveText">离线</span></span>
+      <button class="btn" id="stickBtn" title="有新消息时自动滚动到底部">自动滚动</button>
+      <button class="btn" id="quotesBtn" title="查看 Agent 提取的报价">报价</button>
+      <button class="btn" id="exportBtn">导出 JSON</button>
+      <button class="btn danger" id="clearBtn">清空</button>
+    </header>
+    <section class="feed" id="feed"></section>
+    <button class="jump" id="jumpBtn" hidden>↓ 回到最新</button>
+  </main>
+</div>
+
+<div class="lightbox" id="lightbox">
+  <button class="lightbox__close" id="lightboxClose">×</button>
+  <img id="lightboxImg" alt="预览" />
+</div>
+
+<div class="token-gate" id="tokenGate" hidden>
+  <div class="token-gate__box">
+    <b>需要访问令牌</b>
+    <span>该服务已启用 token 鉴权，请输入后进入</span>
+    <input id="tokenInput" type="password" placeholder="token" autocomplete="off" />
+    <button id="tokenSave">进入</button>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  /* 分页与轮询参数：先加载最新 PAGE 条，向上翻页每次 PAGE 条 */
+  const PAGE = 200;
+  const POLL_LIMIT = 500;
+  const POLL_MS = 2000;
+  const ROOMS_EVERY = 5; // 每 5 次轮询顺带刷新房间列表与统计
+
+  const KIND_LABEL = { original: "原图", full: "原图", mid: "中图", thumbnail: "缩略图" };
+  const APPMSG_LABEL = {
+    5: "链接", 6: "文件", 19: "聊天记录", 33: "小程序", 36: "小程序",
+    57: "引用", 74: "文件", 2000: "转账",
+  };
+
+  const state = {
+    messages: [],          // 已加载记录（按 seq 升序）
+    bySeq: new Map(),
+    imgBySvr: new Map(),   // msgSvrId -> { best, thumb }
+    rooms: [],
+    selectedRoom: null,    // null = 全部群聊
+    search: "",
+    firstSeq: null,        // 已加载的最小 seq（>1 说明还有更早的）
+    lastSeq: 0,            // 已加载的最大 seq
+    total: 0,
+    stick: true,
+    online: false,
+    stats: null,           // 最近一次 /api/stats（含 socketClients）
+    view: "messages",      // messages | quotes
+    quotes: [],
+    quoteIds: new Set(),
+    lastQseq: 0,
+    lastSeen: {},          // roomId -> 已读到的 seq
+    polls: 0,
+  };
+
+  const $ = (sel) => document.querySelector(sel);
+  const feed = $("#feed");
+  const roomList = $("#roomList");
+
+  /* ---------- 工具 ---------- */
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+    }[c]));
+  }
+  function escapeRegExp(s) {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+  function fmtTime(ms) {
+    if (!ms) return "";
+    const d = new Date(ms);
+    const p = (n) => String(n).padStart(2, "0");
+    return p(d.getHours()) + ":" + p(d.getMinutes());
+  }
+  function fmtDate(ms) {
+    if (!ms) return "";
+    const d = new Date(ms);
+    const p = (n) => String(n).padStart(2, "0");
+    return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+  }
+  function fmtSize(bytes) {
+    const n = Number(bytes) || 0;
+    if (!n) return "";
+    if (n >= 1048576) return (n / 1048576).toFixed(1) + " MB";
+    if (n >= 1024) return Math.round(n / 1024) + " KB";
+    return n + " B";
+  }
+  function colorFor(sender) {
+    let h = 0;
+    for (const ch of String(sender || "")) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+    return "hsl(" + (h % 360) + ", 48%, 46%)";
+  }
+  function avatarChar(sender) {
+    return (String(sender || "").replace(/^wxid_/, "") || "?").slice(0, 1).toUpperCase();
+  }
+  function shortRoom(roomId) {
+    return String(roomId || "未知群").replace(/@chatroom$/, "");
+  }
+  function isImage(rec) {
+    return Number(rec.msg && rec.msg.type) === 3;
+  }
+
+  /* ---------- 图片择优（同一 msgSvrId 多条记录取最佳） ---------- */
+
+  function kindScore(rec) {
+    const kind = rec.msg.imageKind || "full";
+    if (kind === "original") return 3;
+    if (kind === "mid" || kind === "full") return 2;
+    return 1;
+  }
+  // 同档位优先大小最接近 hdLength 的（真正的原图），其余按大小
+  function imgQuality(rec) {
+    const size = Number(rec.imgSize || rec.msg.imageSize) || 0;
+    if (!size) return -1;
+    const hd = Number(rec.msg.hdLength) || 0;
+    if ((rec.msg.imageKind || "full") === "original" && hd > 0) return -Math.abs(size - hd);
+    return size;
+  }
+  function betterThan(a, b) {
+    const ka = kindScore(a), kb = kindScore(b);
+    if (ka !== kb) return ka > kb;
+    return imgQuality(a) > imgQuality(b);
+  }
+
+  function addRecord(rec) {
+    if (!rec || state.bySeq.has(rec.seq)) return;
+    state.bySeq.set(rec.seq, rec);
+    state.messages.push(rec);
+    if (!isImage(rec)) return;
+    const svr = rec.msg.msgSvrId;
+    if (!svr) return;
+    let entry = state.imgBySvr.get(svr);
+    if (!entry) {
+      entry = { best: rec, thumb: null };
+      state.imgBySvr.set(svr, entry);
+    } else if (betterThan(rec, entry.best)) {
+      entry.best = rec;
+    }
+    if (rec.msg.imageKind === "thumbnail" && rec.imgFile && !entry.thumb) entry.thumb = rec;
+  }
+
+  function resetCache() {
+    state.messages = [];
+    state.bySeq.clear();
+    state.imgBySvr.clear();
+    state.firstSeq = null;
+    state.lastSeq = 0;
+  }
+
+  /* ---------- API ---------- */
+
+  let authToken = "";
+  try { authToken = localStorage.getItem("sync_token") || ""; } catch (e) { /* 隐私模式 */ }
+
+  // 本地资源（/images/...）拼 token 查询参数；外部 cdnUrl 原样
+  function localUrl(p) {
+    if (!authToken) return p;
+    return p + (p.indexOf("?") < 0 ? "?" : "&") + "token=" + encodeURIComponent(authToken);
+  }
+
+  async function api(path, opts) {
+    opts = opts || {};
+    opts.headers = Object.assign({}, opts.headers,
+      authToken ? { Authorization: "Bearer " + authToken } : {});
+    const resp = await fetch(path, opts);
+    if (resp.status === 401) {
+      showTokenGate();
+      throw new Error("未授权");
+    }
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    return resp.json();
+  }
+
+  async function initialLoad() {
+    const stats = await api("/api/stats");
+    state.total = stats.count || 0;
+    updateFoot(stats);
+    const after = Math.max(0, state.total - PAGE);
+    const data = await api("/api/messages?after=" + after + "&limit=" + (PAGE + POLL_LIMIT));
+    resetCache();
+    (data.messages || []).forEach(addRecord);
+    state.messages.sort((a, b) => a.seq - b.seq);
+    state.total = data.total;
+    state.lastSeq = data.start + (data.messages || []).length;
+    state.firstSeq = state.messages.length ? state.messages[0].seq : null;
+    // 打开页面时历史消息视为已读，未读角标只统计之后新到的
+    state.rooms = (await api("/api/rooms")).rooms || [];
+    for (const r of state.rooms) state.lastSeen[r.roomId] = state.lastSeq;
+    renderAll();
+  }
+
+  async function poll() {
+    try {
+      const data = await api("/api/messages?after=" + state.lastSeq + "&limit=" + POLL_LIMIT);
+      // 服务端数据被外部清空（seq 重新计数）时整体重载
+      if (data.total < state.lastSeq) {
+        await initialLoad();
+        setOnline(true);
+        return;
+      }
+      state.total = data.total;
+      const fresh = (data.messages || []).filter((r) => !state.bySeq.has(r.seq));
+      if (fresh.length) {
+        fresh.forEach(addRecord);
+        state.messages.sort((a, b) => a.seq - b.seq);
+        state.lastSeq = Math.max.apply(null, [state.lastSeq].concat(fresh.map((r) => r.seq)));
+        if (state.firstSeq == null) state.firstSeq = state.messages.length ? state.messages[0].seq : null;
+        renderAll();
+      }
+      if (++state.polls % ROOMS_EVERY === 0) {
+        try {
+          state.rooms = (await api("/api/rooms")).rooms || [];
+          updateFoot(await api("/api/stats"));
+          renderRooms();
+        } catch (e) { /* 房间刷新失败不影响主流程 */ }
+      }
+      try {
+        const q = await api("/api/quotes?after=" + state.lastQseq + "&limit=500");
+        const freshQ = (q.quotes || []).filter((r) => !state.quoteIds.has(r.qseq));
+        if (freshQ.length) {
+          freshQ.forEach((r) => { state.quoteIds.add(r.qseq); state.quotes.push(r); });
+          state.quotes.sort((a, b) => a.qseq - b.qseq);
+          state.lastQseq = Math.max.apply(null, [state.lastQseq].concat(freshQ.map((r) => r.qseq)));
+          if (state.view === "quotes") renderFeed();
+        }
+      } catch (e) { /* 报价接口失败不影响主状态 */ }
+      setOnline(true);
+    } catch (e) {
+      setOnline(false, e.message);
+    }
+  }
+
+  async function loadEarlier() {
+    if (state.firstSeq == null || state.firstSeq <= 1) return;
+    const after = Math.max(0, state.firstSeq - 1 - PAGE);
+    const data = await api("/api/messages?after=" + after + "&limit=" + PAGE);
+    const older = (data.messages || []).filter((r) => !state.bySeq.has(r.seq));
+    if (!older.length) {
+      state.firstSeq = 1;
+      renderAll();
+      return;
+    }
+    // 前插记录后保持视口停留在原位置
+    const prevHeight = feed.scrollHeight;
+    const prevTop = feed.scrollTop;
+    older.forEach(addRecord);
+    state.messages.sort((a, b) => a.seq - b.seq);
+    state.firstSeq = state.messages[0].seq;
+    renderAll();
+    feed.scrollTop = prevTop + (feed.scrollHeight - prevHeight);
+  }
+
+  /* ---------- 渲染 ---------- */
+
+  function visibleMessages() {
+    let list = state.messages;
+    if (state.selectedRoom) list = list.filter((r) => r.msg.roomId === state.selectedRoom);
+    if (state.search) {
+      const q = state.search.toLowerCase();
+      list = list.filter((r) => (r.msg.content || "").toLowerCase().includes(q));
+    }
+    return list;
+  }
+
+  function renderAll() {
+    renderRooms();
+    renderFeed();
+  }
+
+  function renderFeed() {
+    if (state.view === "quotes") {
+      renderQuotes();
+      return;
+    }
+    const list = visibleMessages();
+    $("#roomTitle").textContent = state.selectedRoom ? shortRoom(state.selectedRoom) : "全部群聊";
+    $("#roomCount").textContent = list.length + " 条消息";
+
+    if (!list.length) {
+      const hasAny = state.messages.length > 0;
+      feed.innerHTML =
+        '<div class="feed__empty"><b>' + (hasAny ? "没有匹配的消息" : "还没有捕获到消息") + "</b>" +
+        "<span>" + (hasAny ? "换个关键字，或清除房间过滤" : "手机端开启「群聊回传」后，新消息会实时出现在这里") + "</span></div>";
+      return;
+    }
+
+    let html = "";
+    if (state.firstSeq != null && state.firstSeq > 1 && !state.search) {
+      html += '<button class="load-earlier" id="loadEarlier">加载更早消息</button>';
+    }
+    let lastDate = "";
+    const seenSvr = new Set();
+    for (const rec of list) {
+      if (isImage(rec)) {
+        const svr = rec.msg.msgSvrId;
+        if (svr) {
+          if (seenSvr.has(svr)) continue;
+          seenSvr.add(svr);
+        }
+      }
+      const t = rec.msg.createTime || rec.receivedAt;
+      const date = fmtDate(t);
+      if (date !== lastDate) {
+        lastDate = date;
+        html += '<div class="date-sep"><span>' + date + "</span></div>";
+      }
+      html += rowHtml(rec);
+    }
+    feed.innerHTML = html;
+    if (state.stick) scrollBottom();
+  }
+
+  function rowHtml(rec) {
+    const m = rec.msg || {};
+    const sender = m.sender || "unknown";
+    const t = m.createTime || rec.receivedAt;
+    const roomTag = state.selectedRoom
+      ? ""
+      : '<span class="row__room">' + escapeHtml(shortRoom(m.roomId)) + "</span>";
+    return (
+      '<div class="row" data-seq="' + rec.seq + '">' +
+      '<div class="avatar" style="background:' + colorFor(sender) + '">' + escapeHtml(avatarChar(sender)) + "</div>" +
+      '<div class="row__body">' +
+      '<div class="row__meta">' +
+      '<span class="row__sender">' + escapeHtml(sender) + "</span>" +
+      '<span title="' + escapeHtml(new Date(t).toLocaleString()) + '">' + fmtTime(t) + "</span>" +
+      roomTag +
+      "</div>" +
+      bodyHtml(rec) +
+      "</div></div>"
+    );
+  }
+
+  function bodyHtml(rec) {
+    const m = rec.msg || {};
+    const type = Number(m.type);
+    const content = m.content || "";
+    if (type === 3) return imageCardHtml(rec);
+    if (type === 1) return '<div class="bubble">' + formatText(content) + "</div>";
+    if (type === 47) return appCardHtml("表情", "[动画表情]", "");
+    if ((type & 0xffff) === 49 || /^<\?xml|^<msg[>\s]/.test(content)) return appMsgHtml(content);
+    return appCardHtml("消息", "[类型 " + type + "]", content ? escapeHtml(content.slice(0, 120)) : "");
+  }
+
+  // 转义 → 链接化 → 搜索高亮（只处理标签外的文本）
+  function formatText(text) {
+    let html = escapeHtml(text);
+    html = html.replace(/(https?:\/\/[^\s<]+)/gi, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
+    const q = state.search;
+    if (!q) return html;
+    const re = new RegExp("(" + escapeRegExp(escapeHtml(q)) + ")", "gi");
+    return html
+      .split(/(<[^>]+>)/)
+      .map((part, i) => (i % 2 === 0 ? part.replace(re, "<mark>$1</mark>") : part))
+      .join("");
+  }
+
+  function imageCardHtml(rec) {
+    const svr = rec.msg.msgSvrId;
+    const entry = svr ? state.imgBySvr.get(svr) : null;
+    const best = (entry && entry.best) || rec;
+    const src = best.imgFile ? localUrl("/" + best.imgFile) : best.msg.cdnUrl || "";
+    const kind = best.msg.imageKind || "full";
+    const size = best.imgSize || best.msg.imageSize || best.msg.hdLength;
+
+    let inner;
+    if (src) {
+      inner = '<img class="msg-img" loading="lazy" alt="图片" src="' + escapeHtml(src) + '"' +
+        (svr ? ' data-svr="' + escapeHtml(String(svr)) + '"' : "") + " />";
+    } else {
+      inner = '<div class="img-missing">图片未随消息上传</div>';
+    }
+    return (
+      '<div class="img-card">' + inner +
+      '<div class="img-card__meta">' +
+      '<span class="badge' + (kind === "thumbnail" ? " thumb" : "") + '">' + escapeHtml(KIND_LABEL[kind] || kind) + "</span>" +
+      (size ? "<span>" + fmtSize(size) + "</span>" : "") +
+      "</div></div>"
+    );
+  }
+
+  function cdata(content, tag) {
+    const m = content.match(new RegExp("<" + tag + ">(?:<!\\[CDATA\\[)?([\\s\\S]*?)(?:\\]\\]>)?</" + tag + ">"));
+    return m ? m[1].trim() : "";
+  }
+
+  function appMsgHtml(content) {
+    const title = cdata(content, "title");
+    const des = cdata(content, "des");
+    const subType = Number(cdata(content, "type")) || 0;
+    const totalLen = Number(cdata(content, "totallen")) || 0;
+    const fileExt = cdata(content, "fileext");
+    const label = APPMSG_LABEL[subType] || "应用消息";
+    let sub = des;
+    if (!sub && totalLen) sub = (fileExt ? fileExt.toUpperCase() + " · " : "") + fmtSize(totalLen);
+    return appCardHtml(label, title || "[" + label + "]", sub);
+  }
+
+  function appCardHtml(label, titleHtml, subHtml) {
+    return (
+      '<div class="app-card">' +
+      '<div class="app-card__icon">' + escapeHtml(label.slice(0, 2)) + "</div>" +
+      '<div class="app-card__body">' +
+      '<div class="app-card__title">' + escapeHtml(titleHtml) + "</div>" +
+      (subHtml ? '<div class="app-card__sub">' + subHtml + "</div>" : "") +
+      "</div></div>"
+    );
+  }
+
+  /* ---------- 报价视图 ---------- */
+
+  function visibleQuotes() {
+    let list = state.quotes;
+    if (state.selectedRoom) list = list.filter((r) => r.roomId === state.selectedRoom);
+    if (state.search) {
+      const q = state.search.toLowerCase();
+      list = list.filter((r) =>
+        ((r["项目"] || "") + (r["备注"] || "") + (r.summary || "") + (r.sender || ""))
+          .toLowerCase().includes(q));
+    }
+    return list;
+  }
+
+  function renderQuotes() {
+    const list = visibleQuotes();
+    $("#roomCount").textContent = list.length + " 条报价";
+    if (!list.length) {
+      feed.innerHTML =
+        '<div class="feed__empty"><b>暂无报价记录</b>' +
+        "<span>Agent 分析到新消息中的报价后会出现在这里</span></div>";
+      return;
+    }
+    let html = "";
+    let lastDate = "";
+    let openTable = false;
+    const THEAD = "<thead><tr><th>时间</th><th>发送人</th><th>项目</th><th>价格</th><th>单位</th><th>数量</th><th>备注</th><th>来源</th><th>摘要</th></tr></thead>";
+    for (const r of list) {
+      const d = fmtDate(r.time);
+      if (d !== lastDate) {
+        if (openTable) html += "</tbody></table>";
+        lastDate = d;
+        html += '<div class="date-sep"><span>' + d + "</span></div>";
+        html += '<table class="qtable">' + THEAD + "<tbody>";
+        openTable = true;
+      }
+      html += quoteRowHtml(r);
+    }
+    if (openTable) html += "</tbody></table>";
+    feed.innerHTML = html;
+    if (state.stick) scrollBottom();
+  }
+
+  function quoteRowHtml(r) {
+    const imgLink = r.imgFile
+      ? '<a class="qimg" data-img="' + escapeHtml(localUrl("/" + r.imgFile)) + '">查看原图</a>'
+      : "";
+    const summary = r.source === "图片" ? imgLink : escapeHtml(r.summary || "");
+    return (
+      "<tr>" +
+      '<td class="mono">' + fmtTime(r.time) + "</td>" +
+      '<td class="mono">' + escapeHtml(r.sender || "") + "</td>" +
+      "<td>" + escapeHtml(r["项目"] || "") + "</td>" +
+      '<td class="qprice">' + escapeHtml(r["价格"] || "") + "</td>" +
+      "<td>" + escapeHtml(r["单位"] || "") + "</td>" +
+      "<td>" + escapeHtml(r["数量"] || "") + "</td>" +
+      "<td>" + escapeHtml(r["备注"] || "") + "</td>" +
+      "<td>" + escapeHtml(r.source || "") + "</td>" +
+      '<td class="qsum">' + summary + "</td>" +
+      "</tr>"
+    );
+  }
+
+  function renderRooms() {
+    let html = roomItemHtml(null, "全部群聊", state.total, unreadFor(null));
+    for (const room of state.rooms) {
+      html += roomItemHtml(room.roomId, shortRoom(room.roomId), room.count, unreadFor(room.roomId));
+    }
+    roomList.innerHTML = html;
+  }
+
+  function roomItemHtml(roomId, name, count, unread) {
+    const active = state.selectedRoom === roomId ? " active" : "";
+    return (
+      '<button class="room' + active + '" data-room="' + (roomId == null ? "" : escapeHtml(roomId)) + '">' +
+      '<span class="room__name" title="' + (roomId == null ? "" : escapeHtml(roomId)) + '">' + escapeHtml(name) + "</span>" +
+      '<span class="room__count">' + (count || 0) + "</span>" +
+      (unread ? '<span class="room__unread">' + unread + "</span>" : "") +
+      "</button>"
+    );
+  }
+
+  function unreadFor(roomId) {
+    let n = 0;
+    if (roomId == null) {
+      for (const rec of state.messages) {
+        if (rec.seq > (state.lastSeen[rec.msg.roomId] || 0)) n++;
+      }
+      return n;
+    }
+    const seen = state.lastSeen[roomId] || 0;
+    for (const rec of state.messages) {
+      if (rec.msg.roomId === roomId && rec.seq > seen) n++;
+    }
+    return n;
+  }
+
+  function selectRoom(roomId) {
+    state.selectedRoom = roomId;
+    if (roomId) state.lastSeen[roomId] = state.lastSeq;
+    else for (const r of state.rooms) state.lastSeen[r.roomId] = state.lastSeq;
+    closeSidebar();
+    renderAll();
+  }
+
+  function updateFoot(stats) {
+    if (stats) {
+      state.stats = stats;
+      $("#footStats").textContent = (stats.count || 0) + " 条 · 图片 " + (stats.images || 0) + " 张";
+      if (state.online) setOnline(true); // socketClients 变化时刷新状态行
+    }
+    $("#footHost").textContent = location.host;
+  }
+
+  function scrollBottom() {
+    feed.scrollTop = feed.scrollHeight;
+  }
+
+  function setStick(on) {
+    state.stick = on;
+    $("#stickBtn").classList.toggle("on", on);
+    $("#jumpBtn").hidden = on;
+    if (on) scrollBottom();
+  }
+
+  function setOnline(on, err) {
+    state.online = on;
+    $("#brandDot").classList.toggle("on", on);
+    $("#liveDot").classList.toggle("on", on);
+    $("#liveText").textContent = on ? "实时" : "离线";
+    const linked = !!(state.stats && state.stats.socketClients > 0);
+    $("#brandStatus").textContent = on
+      ? "接收端运行中 · 每 " + POLL_MS / 1000 + "s 刷新 · " + (linked ? "手机 socket 已连接" : "HTTP 模式")
+      : err ? "接收端错误: " + err : "接收端未响应，重试中…";
+  }
+
+  /* ---------- 灯箱 ---------- */
+
+  function openLightbox(src) {
+    $("#lightboxImg").src = src;
+    $("#lightbox").classList.add("open");
+  }
+  function closeLightbox() {
+    $("#lightbox").classList.remove("open");
+    $("#lightboxImg").src = "";
+  }
+
+  /* ---------- 侧边栏抽屉（窄屏） ---------- */
+
+  function openSidebar() {
+    $("#sidebar").classList.add("open");
+    $("#scrim").hidden = false;
+  }
+  function closeSidebar() {
+    $("#sidebar").classList.remove("open");
+    $("#scrim").hidden = true;
+  }
+
+  /* ---------- 动作 ---------- */
+
+  async function doExport() {
+    const btn = $("#exportBtn");
+    btn.disabled = true;
+    try {
+      const all = [];
+      let after = 0;
+      for (;;) {
+        const data = await api("/api/messages?after=" + after + "&limit=5000");
+        const batch = data.messages || [];
+        all.push.apply(all, batch);
+        after = data.start + batch.length;
+        if (after >= data.total || !batch.length) break;
+      }
+      const blob = new Blob([JSON.stringify(all, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const d = new Date();
+      const p = (n) => String(n).padStart(2, "0");
+      a.href = url;
+      a.download = "capture-" + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + "-" + p(d.getHours()) + p(d.getMinutes()) + ".json";
+      a.click();
+      URL.revokeObjectURL(url);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function doClear() {
+    const scope = state.selectedRoom ? "「" + shortRoom(state.selectedRoom) + "」" : "全部群聊";
+    if (!window.confirm("确定清空" + scope + "的捕获记录？此操作不可恢复。")) return;
+    const q = state.selectedRoom ? "?room=" + encodeURIComponent(state.selectedRoom) : "";
+    await api("/api/clear" + q, { method: "POST" });
+    state.lastSeen = {};
+    await initialLoad();
+  }
+
+  /* ---------- 事件绑定 ---------- */
+
+  let searchTimer = null;
+  $("#search").addEventListener("input", (e) => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      state.search = e.target.value.trim();
+      renderFeed();
+    }, 150);
+  });
+
+  roomList.addEventListener("click", (e) => {
+    const btn = e.target.closest(".room");
+    if (!btn) return;
+    selectRoom(btn.dataset.room || null);
+  });
+
+  feed.addEventListener("click", (e) => {
+    if (e.target.closest("#loadEarlier")) {
+      const btn = e.target.closest("#loadEarlier");
+      btn.disabled = true;
+      btn.textContent = "加载中…";
+      loadEarlier().catch(() => renderFeed());
+      return;
+    }
+    const qimg = e.target.closest(".qimg");
+    if (qimg) {
+      openLightbox(qimg.dataset.img);
+      return;
+    }
+    const img = e.target.closest("img.msg-img");
+    if (img) openLightbox(img.src);
+  });
+
+  // 图片加载失败：退回同消息的缩略图，再不行换占位块（error 不冒泡，用捕获阶段）
+  feed.addEventListener("error", (e) => {
+    const img = e.target;
+    if (!(img instanceof HTMLImageElement) || !img.classList.contains("msg-img")) return;
+    const svr = img.dataset.svr;
+    const entry = svr ? state.imgBySvr.get(svr) : null;
+    if (entry && entry.thumb && !img.dataset.fellBack) {
+      img.dataset.fellBack = "1";
+      img.src = localUrl("/" + entry.thumb.imgFile);
+      return;
+    }
+    const ph = document.createElement("div");
+    ph.className = "img-missing";
+    ph.textContent = "图片不可用";
+    img.replaceWith(ph);
+  }, true);
+
+  feed.addEventListener("scroll", () => {
+    const nearBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 80;
+    if (nearBottom !== state.stick) setStick(nearBottom);
+  });
+
+  $("#quotesBtn").addEventListener("click", () => {
+    state.view = state.view === "quotes" ? "messages" : "quotes";
+    $("#quotesBtn").classList.toggle("on", state.view === "quotes");
+    renderFeed();
+  });
+  $("#stickBtn").addEventListener("click", () => setStick(!state.stick));
+  $("#jumpBtn").addEventListener("click", () => setStick(true));
+  $("#exportBtn").addEventListener("click", () => doExport().catch((e) => setOnline(false, e.message)));
+  $("#clearBtn").addEventListener("click", () => doClear().catch((e) => setOnline(false, e.message)));
+  $("#menuBtn").addEventListener("click", openSidebar);
+  $("#scrim").addEventListener("click", closeSidebar);
+  $("#lightboxClose").addEventListener("click", closeLightbox);
+  $("#lightbox").addEventListener("click", (e) => {
+    if (e.target === $("#lightbox")) closeLightbox();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      closeLightbox();
+      closeSidebar();
+    }
+  });
+
+  /* ---------- 启动 ---------- */
+
+  setStick(true);
+
+  function showTokenGate() { $("#tokenGate").hidden = false; }
+  function hideTokenGate() { $("#tokenGate").hidden = true; }
+
+  function saveToken() {
+    authToken = $("#tokenInput").value.trim();
+    try { localStorage.setItem("sync_token", authToken); } catch (e) { /* 隐私模式 */ }
+    hideTokenGate();
+    boot();
+  }
+  $("#tokenSave").addEventListener("click", saveToken);
+  $("#tokenInput").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") saveToken();
+  });
+
+  let pollingStarted = false;
+
+  function boot() {
+    initialLoad()
+      .then(() => {
+        setOnline(true);
+        poll();
+        if (!pollingStarted) {
+          pollingStarted = true;
+          setInterval(poll, POLL_MS);
+        }
+      })
+      .catch((e) => {
+        setOnline(false, e.message);
+        if ($("#tokenGate").hidden) setTimeout(boot, 3000); // 401 时等用户输入 token
+      });
+  }
+  boot();
+})();
+</script>
+</body>
+</html>
