@@ -13,6 +13,7 @@ import json
 import mimetypes
 import os
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs
 
@@ -126,6 +127,15 @@ class Handler(BaseHTTPRequestHandler):
             needle = qtext.lower()
             msgs = [r for r in msgs if needle in (r["msg"].get("content") or "").lower()]
         # imageBase64 落盘时已存为 imgFile，响应里剔除以控制体积（存储不变）
+        now_ms = int(time.time() * 1000)
+        original_ids = {
+            (r.get("msg") or {}).get("msgSvrId")
+            for r in store.messages
+            if isinstance(r.get("msg"), dict)
+            and r["msg"].get("type") == 3
+            and r["msg"].get("imageKind") == "original"
+        }
+        PENDING_ORIGINAL_MS = 120_000  # 手机下载/上传原图通常几十秒内完成
         slim = []
         for r in msgs:
             m = r.get("msg")
@@ -134,6 +144,19 @@ class Handler(BaseHTTPRequestHandler):
                 m.pop("imageBase64", None)
                 r = dict(r)
                 r["msg"] = m
+            m = r.get("msg")
+            if (
+                isinstance(m, dict)
+                and m.get("type") == 3
+                and m.get("imageKind") != "original"
+            ):
+                svr = m.get("msgSvrId")
+                recv_at = r.get("receivedAt") or now_ms
+                if (
+                    svr not in original_ids
+                    and now_ms - recv_at < PENDING_ORIGINAL_MS
+                ):
+                    r["pendingOriginal"] = True
             slim.append(r)
         self._json(200, {"ok": True, "total": total, "start": start, "messages": slim})
 

@@ -298,6 +298,9 @@
     color: var(--accent-ink);
   }
   .badge.thumb { background: rgba(230, 145, 45, 0.15); color: #d07d1a; }
+  .badge.pending { background: rgba(80, 140, 255, 0.15); color: #3a6fd8; }
+  @keyframes wabPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+  .img-pending { animation: wabPulse 1.2s ease-in-out infinite; }
   .img-missing {
     padding: 34px 18px;
     text-align: center;
@@ -867,17 +870,20 @@
     const kind = best.msg.imageKind || "full";
     const size = best.imgSize || best.msg.imageSize || best.msg.hdLength;
 
+    const pending = !!rec.pendingOriginal;
     let inner;
     if (src) {
-      inner = '<img class="msg-img" loading="lazy" alt="图片" src="' + escapeHtml(src) + '"' +
+      inner = '<img class="msg-img' + (pending ? " img-pending" : "") + '" loading="lazy" alt="图片" src="' + escapeHtml(src) + '"' +
         (svr ? ' data-svr="' + escapeHtml(String(svr)) + '"' : "") + " />";
     } else {
       inner = '<div class="img-missing">图片未随消息上传</div>';
     }
+    const badge = pending
+      ? '<span class="badge pending">原图传输中</span>'
+      : '<span class="badge' + (kind === "thumbnail" ? " thumb" : "") + '">' + escapeHtml(KIND_LABEL[kind] || kind) + "</span>";
     return (
       '<div class="img-card">' + inner +
-      '<div class="img-card__meta">' +
-      '<span class="badge' + (kind === "thumbnail" ? " thumb" : "") + '">' + escapeHtml(KIND_LABEL[kind] || kind) + "</span>" +
+      '<div class="img-card__meta">' + badge +
       (size ? "<span>" + fmtSize(size) + "</span>" : "") +
       "</div></div>"
     );
