@@ -116,4 +116,5 @@ class RelayListener:
                 self.agent.enqueue(rec)
             except Exception:
                 pass
-        return json.dumps({"ok": True, "seq": rec["seq"]}).encode()
+        # Compact separators so naive clients matching the literal "ok":true still work.
+        return json.dumps({"ok": True, "seq": rec["seq"]}, separators=(",", ":")).encode()
