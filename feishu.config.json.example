@@ -1,5 +1,6 @@
 {
   "enabled": false,
+  "event_mode": "long_conn",
 
   "app_id": "cli_xxxxxxxx",
   "app_secret": "换你的 app_secret",

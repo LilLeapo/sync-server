@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""飞书机器人集成：应用 API 客户端 + webhook 事件接收 + 报价推送 + 问答机器人。
+"""飞书机器人集成：应用 API 客户端 + 事件接收（官方 SDK 长连接 / webhook）+ 报价推送 + 问答机器人。
 
 纯标准库实现（urllib），不需要引入官方 SDK：
 
@@ -187,6 +187,9 @@ class FeishuBot:
 
         self.verification_token = str(cfg.get("verification_token") or "")
         self.encrypt_key = str(cfg.get("encrypt_key") or "")
+        self.event_mode = str(cfg.get("event_mode") or "webhook")
+        self.ws_connected = False
+        self.ws_error = ""
 
         push = cfg.get("push") or {}
         self.push_mode = str(push.get("mode") or "none")
@@ -253,6 +256,9 @@ class FeishuBot:
     def bot_status(self) -> dict:
         return {
             "enabled": True,
+            "event_mode": self.event_mode,
+            "ws_connected": self.ws_connected,
+            "ws_error": self.ws_error,
             "push_mode": self.push_mode,
             "qna_enabled": self.qna_enabled,
             "pushed": self.pushed,
@@ -298,15 +304,91 @@ class FeishuBot:
                 return 403, json.dumps({"code": 403, "msg": "token mismatch"}, ensure_ascii=False)
 
         # 幂等去重 + 投递 worker，立即返回成功（飞书要求 3s 内响应）
+        self.enqueue_event(body)
+        return 200, json.dumps({"code": 0})
+
+    def enqueue_event(self, body: dict) -> bool:
+        """幂等去重后投递到事件 worker（webhook 与长连接共用）。"""
         event_id = ((body.get("header") or {}).get("event_id") or "")
         if event_id:
             if event_id in self._seen_events:
-                return 200, json.dumps({"code": 0})
+                return False
             self._seen_events.add(event_id)
             if len(self._seen_events) > 2000:
                 self._seen_events = set(list(self._seen_events)[-1000:])
         self._event_q.put(body)
-        return 200, json.dumps({"code": 0})
+        return True
+
+    # -- 官方 SDK 长连接事件接收 -------------------------------------
+
+    @staticmethod
+    def _lark_sdk():
+        try:
+            import lark_oapi  # 飞书官方 Python SDK
+            return lark_oapi
+        except Exception as e:
+            raise FeishuError(-1, f"长连接需要安装官方 SDK：pip install lark-oapi（{e}）")
+
+    def start_event_source(self):
+        """按 event_mode 启动事件接收源；long_conn 用官方 SDK WebSocket。"""
+        if self.event_mode == "long_conn":
+            threading.Thread(target=self._ws_loop, daemon=True, name="feishu-ws").start()
+        elif self.event_mode not in ("webhook", "none"):
+            self.log(f"未知事件模式 {self.event_mode}，回退 webhook")
+
+    def _ws_loop(self):
+        retry = 0
+        while True:
+            try:
+                lark = self._lark_sdk()
+                builder = lark.EventDispatcherHandler.builder("", "")
+                handler = builder.register_p2_im_message_receive_v1(
+                    self._ws_message_handler).build()
+                ws_client = lark.ws.Client(
+                    self.client.app_id, self.client.app_secret, event_handler=handler)
+                self.ws_error = ""
+                self.ws_connected = True
+                retry = 0
+                self.log("长连接事件接收启动 (lark-oapi ws)")
+                ws_client.start()  # 阻塞运行，SDK 内部自动重连
+            except Exception as e:
+                self.ws_connected = False
+                self.ws_error = str(e)
+                self.log(f"长连接异常（第 {retry + 1} 次）: {e}")
+                retry += 1
+            time.sleep(min(5 + retry * 5, 60))
+
+    def _ws_message_handler(self, data):
+        """lark-oapi P2ImMessageReceiveV1 → 与 webhook 相同的事件结构。"""
+        try:
+            ev = data.event
+            sender = ev.sender if ev else None
+            message = ev.message if ev else None
+            payload = {
+                "header": {
+                    "event_type": "im.message.receive_v1",
+                    "event_id": getattr(data, "uuid", "") or "",
+                },
+                "event": {
+                    "message": {
+                        "message_id": getattr(message, "message_id", None),
+                        "chat_id": getattr(message, "chat_id", None),
+                        "chat_type": getattr(message, "chat_type", None) or "p2p",
+                        "message_type": getattr(message, "message_type", None),
+                        "content": getattr(message, "content", None),
+                    },
+                    "sender": {
+                        "sender_type": getattr(sender, "sender_type", None) or "user",
+                        "sender_id": {
+                            "open_id": getattr(
+                                getattr(sender, "sender_id", None), "open_id", "") or "",
+                        },
+                    },
+                },
+            }
+            self.enqueue_event(payload)
+        except Exception as e:
+            self.log(f"长连接事件解析失败: {e}")
 
     # -- 事件处理线程 ---------------------------------------------
 

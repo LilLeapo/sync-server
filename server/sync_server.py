@@ -319,7 +319,7 @@ def main():
     server.bridge = bridge
     server.quote_log = quote_log
 
-    # 飞书机器人：报价推送 + 问答 + webhook 事件
+    # 飞书机器人：报价推送 + 问答 + 长连接/Webhook 事件
     server.feishu_bot = feishu_mod.create_feishu_bot(
         args.feishu_config, store=store, quote_log=quote_log, bridge=bridge,
         plugin_host=plugins, data_dir=args.data_dir)
@@ -327,6 +327,7 @@ def main():
         plugins.bind(store=store, quote_log=quote_log, bridge=bridge,
                      feishu_client=server.feishu_bot.client,
                      feishu_cfg=server.feishu_bot.cfg, bot=server.feishu_bot)
+        server.feishu_bot.start_event_source()
         server.agent = quote_agent.create_agent(
             args.agent_config, args.data_dir,
             on_quote=[server.feishu_bot.notify_quote], bridge=bridge)

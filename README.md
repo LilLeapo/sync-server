@@ -53,9 +53,9 @@ python3 -m server.sync_server --bind 0.0.0.0 --port 8080 --socket-port 8081 --to
    - `im:message`（获取与发送单聊、群组消息）
    - `im:message.p2p_msg:readonly`（接收用户私聊机器人消息）
    - `im:message.group_at_msg:readonly`（接收群里 @机器人 的消息）
-3. **事件订阅**：订阅 `接收消息 im.message.receive_v1`，请求方式选「将事件发送至开发者服务器」，回调地址填 `https://你的域名/feishu/event`。
-   - 稳妥起见在「加密策略」里配置 **Encrypt Key**，`feishu.config.json` 里同名填写（推送事件将验签 + AES 解密，要求 `pip install pycryptodome`）。
-   - Verification Token 就是「加密策略」页里的 Verification Token。
+3. **事件订阅**：订阅 `接收消息 im.message.receive_v1`。
+   - 推荐「使用长连接接收事件」：应用开通长连接能力后，服务端 `event_mode: "long_conn"`，用官方 SDK（`pip install lark-oapi`）的 WebSocket 长连接收事件，不需要公网 HTTPS 回调地址。
+   - 备选「将事件发送至开发者服务器」（webhook）：回调地址填 `https://你的域名/feishu/event`，`event_mode: "webhook"`；公网建议配 Encrypt Key（`pip install pycryptodome`）并用 Caddy/nginx 反代 TLS。Verification Token 填「加密策略」页里的值。
 4. **报价推送目标**：群里添加「自定义机器人」（群设置 → 群机器人 → 添加机器人 → 自定义机器人），复制 webhook 地址（可开加签），填入 `feishu.config.json` 的 `push.webhook_url / webhook_secret`；或者用带你应用机器人的群 chat_id + `push.mode=app`。
 5. **配置并重启**：
 
@@ -87,7 +87,7 @@ python3 -m server.sync_server --feishu-config ./feishu.config.json
 }
 ```
 
-- SDK 安装（可选，建议用 venv）：`python3 -m venv .venv && .venv/bin/pip install pi-agent`，然后用 `.venv/bin/python -m server.sync_server` 启动
+- SDK 安装（可选，建议用 venv）：`python3 -m venv .venv && .venv/bin/pip install pi-agent lark-oapi`，然后用 `.venv/bin/python -m server.sync_server` 启动
 - 文本报价提取走桥（pi 后端 = SDK Agent 运行时）；**图片报价**仍走本服务的原生视觉调用（需视觉模型）
 - 模型输出严格 JSON：`{"has_quote": false}` 或 `{"has_quote": true, "items": [{"项目","价格","单位","数量","备注"}]}`
 - 飞书问答在多轮会话里注册了 3 个 Agent 工具：`search_quotes` / `latest_quotes` / `room_stats`，模型可自行调用查实时数据
