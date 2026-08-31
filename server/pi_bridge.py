@@ -194,7 +194,7 @@ class PiSdkSession:
         self._agent = Agent(
             stream_fn=create_agent_stream_fn(backend.registry),
             session_id=session_id,
-            get_api_key=(lambda: backend.api_key) if backend.api_key else None,
+            get_api_key=(lambda _provider: backend.api_key) if backend.api_key else None,
         )
         self._agent.set_model(backend._Model(**backend.model_args))
         self._agent.set_system_prompt(system)
