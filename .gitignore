@@ -1,5 +1,7 @@
 data/
 agent.config.json
+feishu.config.json
+.venv/
 __pycache__/
 *.pyc
 .DS_Store

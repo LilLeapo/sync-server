@@ -1,16 +1,28 @@
 # sync-server
 
-手机模块的长连接接收端 + 消息/报价查看服务。纯 Python 标准库实现，零第三方依赖（wxgf 图片解码需要系统安装 ffmpeg）。
+手机模块的长连接接收端 + 消息/报价查看服务 + **飞书机器人（Agent 报价推送 + 问答 + 插件框架）**。纯 Python 标准库实现（wxgf 图片解码需要系统安装 ffmpeg）。
 
-配合 WABTest Android 模块使用：模块监听微信群聊消息，经 TCP 长连接（HTTP 兜底）上报到本服务；本服务落盘消息、托管网页前端，并可选地对消息做报价提取分析。
+配合 WABTest Android 模块使用：模块监听微信群聊消息，经 TCP 长连接（HTTP 兜底）上报到本服务；本服务落盘消息、托管网页前端、提取报价，并经 **pi-agent SDK 桥** 把报价格式化后推送到飞书群机器人；飞书里 @机器人 可以问答报价数据，功能全部由插件注册，随时扩展。
+
+```
+WABTest 手机模块 ──TCP/HTTP──▶ sync-server ──报价 Agent(pi-agent SDK)──▶ 飞书群机器人
+                                     ▲                                        ▲
+                                   Web 前端                              飞书问答：@机器人
+                                                                    （事件订阅 → 插件命令 / Agent 会话）
+```
 
 ## 功能
 
 - **TCP 长连接接收**（NDJSON 协议，默认 8081）：hello 握手（可选 token 鉴权）、逐条 ack、30s 心跳、60s 重复投递去重
 - **HTTP 兜底上报**（`POST /`，与 socket 同一消息格式）
 - **网页前端**（默认 8080）：实时消息流、房间分组/未读、搜索高亮、图片灯箱、导出/清空、「报价」视图
-- **报价 Agent**：文本/图片消息经 OpenAI 兼容视觉模型提取报价，按群分文件写 Markdown（`data/quotes/<roomId>.md`）+ 结构化 `quotes.jsonl` 供前端实时展示
-- **token 鉴权**（可选）：一个 token 同时保护 socket、HTTP 上报、API 与图片
+- **报价 Agent**：文本消息优先走 **pi-agent SDK 桥**（`pi_agent` 的 Agent 运行时），图片走 OpenAI 兼容视觉模型；按群分文件写 Markdown（`data/quotes/<roomId>.md`）+ 结构化 `quotes.jsonl`
+- **飞书机器人**：
+  - 报价推送：Agent 提取到报价 → LLM 格式化成群消息 → 推送到微信群机器人（webhook 加签）或应用消息
+  - 问答：@机器人（群聊）或私聊，Agent 带工具（查报价/最近报价/群统计）回答；多轮会话有记忆、自动过期
+  - 事件订阅 webhook（`POST /feishu/event`）：url_verification、Verification Token 校验、可选 Encrypt Key 的签名校验 + AES-256-CBC 解密
+- **插件框架**：`plugins/*.py` 一个文件一个插件，注册命令 / 消息钩子 / 报价钩子；内置 help、quotes、rooms、stats、echo 五个示例
+- **token 鉴权**（可选）：一个 token 同时保护 socket、HTTP 上报、API 与图片（飞书事件回调用飞书自己的校验，不经过此 token）
 
 ## 快速开始
 
@@ -31,9 +43,78 @@ python3 -m server.sync_server --bind 0.0.0.0 --port 8080 --socket-port 8081 --to
 # 或用环境变量：SYNC_TOKEN=<secret> python3 -m server.sync_server --bind 0.0.0.0
 ```
 
-手机模块设置页：服务器地址 `http://<服务器IP>:8080`，Socket 端口 `8081`，Token 填 `<secret>`。浏览器打开后页面会要求输入 token（存 localStorage）。
+> 公网建议用 Caddy/nginx 反代加 TLS。飞书事件回调地址可反代到 `/feishu/event`（不带 SYNC_TOKEN，由飞书签名/Token 校验保护）。
+> socket 端口（8081）如需暴露，注意其承载的是裸 TCP NDJSON 协议，无法经 HTTP 反代套 TLS（可用 TCP 层反代/隧道）。
 
-> 公网建议用 Caddy/nginx 反代加 TLS，否则 token 与消息明文传输。socket 端口（8081）如需暴露，注意其承载的是裸 TCP NDJSON 协议，无法经 HTTP 反代套 TLS（可用 TCP 层反代/隧道）。
+## 飞书机器人接入（5 步）
+
+1. **建应用**：飞书开放平台 `open.feishu.cn` → 开发者后台 → 创建企业自建应用 → 打开「机器人」能力。
+2. **开权限**（权限管理，发布版本后生效）：
+   - `im:message`（获取与发送单聊、群组消息）
+   - `im:message.p2p_msg:readonly`（接收用户私聊机器人消息）
+   - `im:message.group_at_msg:readonly`（接收群里 @机器人 的消息）
+3. **事件订阅**：订阅 `接收消息 im.message.receive_v1`，请求方式选「将事件发送至开发者服务器」，回调地址填 `https://你的域名/feishu/event`。
+   - 稳妥起见在「加密策略」里配置 **Encrypt Key**，`feishu.config.json` 里同名填写（推送事件将验签 + AES 解密，要求 `pip install pycryptodome`）。
+   - Verification Token 就是「加密策略」页里的 Verification Token。
+4. **报价推送目标**：群里添加「自定义机器人」（群设置 → 群机器人 → 添加机器人 → 自定义机器人），复制 webhook 地址（可开加签），填入 `feishu.config.json` 的 `push.webhook_url / webhook_secret`；或者用带你应用机器人的群 chat_id + `push.mode=app`。
+5. **配置并重启**：
+
+```bash
+cp feishu.config.json.example feishu.config.json   # 按注释填写，enabled: true
+python3 -m server.sync_server --feishu-config ./feishu.config.json
+```
+
+验证：群里发一条含报价的消息 → 手机模块上报 → Agent 提取 → 自定义机器人推送；群里 `@机器人 /help` 或私聊机器人提问。
+
+## Agent（pi-agent SDK）
+
+报价格式化与飞书问答统一走 `server/pi_bridge.py` 桥，可选两种后端（`agent.config.json` 的 `provider`）：
+
+| provider | 说明 |
+|---|---|
+| `auto`（默认） | 已装 `pi-agent`（PyPI 包，Pi 的 Python 版）就走 pi-agent SDK 的 Agent 运行时，否则降级纯标准库 HTTP |
+| `pi` | 强制 pi-agent SDK，未安装则报错停用 |
+| `http` | 纯标准库 `urllib` 调 OpenAI 兼容 `/chat/completions` |
+| `mock` | pi-agent SDK 内置 mock provider（不联网，测试/演示用） |
+
+```json
+{
+  "enabled": true,
+  "provider": "auto",
+  "base_url": "https://your-openai-compatible-endpoint/v1",
+  "api_key": "sk-...",
+  "model": "your-model"
+}
+```
+
+- SDK 安装（可选，建议用 venv）：`python3 -m venv .venv && .venv/bin/pip install pi-agent`，然后用 `.venv/bin/python -m server.sync_server` 启动
+- 文本报价提取走桥（pi 后端 = SDK Agent 运行时）；**图片报价**仍走本服务的原生视觉调用（需视觉模型）
+- 模型输出严格 JSON：`{"has_quote": false}` 或 `{"has_quote": true, "items": [{"项目","价格","单位","数量","备注"}]}`
+- 飞书问答在多轮会话里注册了 3 个 Agent 工具：`search_quotes` / `latest_quotes` / `room_stats`，模型可自行调用查实时数据
+- 输出：`data/quotes/<roomId>.md`、`data/quotes/quotes.jsonl`、`data/quotes/state.json`、`data/feishu/bot.log`、`data/feishu/push_state.json`
+
+## 插件开发
+
+`plugins/` 目录下一个文件一个插件，定义 `register(api)` 即可（照抄 `plugins/echo.py`）：
+
+```python
+# plugins/hello.py
+def register(api):
+    def hello(api, event, args):
+        return "你好，" + (args or "世界") + "！"
+    api.register_command("hello", hello, usage="/hello <名字>", description="打招呼")
+
+    def recent_hook(api, event, text):          # 消息钩子：str 回复 / False 已处理 / None 继续
+        if text.strip() in ("在吗",):
+            return "我在，试试 /help"
+    api.register_message_hook(recent_hook)
+
+    def quote_watch(api, ctx):                  # 报价钩子：返回 False 可拦截默认群推送
+        api.log(f"新报价 {ctx['room']} {len(ctx['rows'])} 条")
+    api.register_quote_hook(quote_watch)
+```
+
+重启服务即生效（`/help` 可确认加载）。运行期资源：`api.store`（消息库）、`api.quotes`（报价库）、`api.bridge`（Agent 桥）、`api.feishu`（飞书客户端）、`api.config`（飞书配置）、`api.reply(text)`、`api.log(msg)`。
 
 ## CLI 参数
 
@@ -45,24 +126,18 @@ python3 -m server.sync_server --bind 0.0.0.0 --port 8080 --socket-port 8081 --to
 | `--data-dir` | ./data | 数据目录 |
 | `--web-dir` | ./web | 前端目录 |
 | `--agent-config` | ./agent.config.json | 报价 Agent 配置 |
+| `--feishu-config` | ./feishu.config.json | 飞书机器人配置（缺失/未启用则跳过） |
+| `--plugins-dir` | ./plugins | 机器人插件目录 |
 | `--token` | `$SYNC_TOKEN` 或空 | 鉴权 token，空 = 不鉴权 |
-
-## Socket 协议（NDJSON，每行一个 JSON）
-
-| 方向 | 帧 | 说明 |
-|---|---|---|
-| 模块 → | `{"hello":"wabsync/1","token":"..."}` | 首帧必须握手；服务端有 token 时校验，失败回 `{"ok":false,"error":"unauthorized"}` 断开 |
-| 模块 → | `{"ping":true}` | 心跳（30s），回 `{"ok":true}` |
-| 模块 → | ChatMessage JSON | 与 HTTP POST body 相同，回 `{"ok":true,"seq":N}`；重复投递回 `{"ok":true,"dup":true}` |
-
-ChatMessage 字段：`roomId / sender / content / type / createTime / msgSvrId`，图片另有 `imageBase64 / imagePath / imageKind / imageSize / cdnUrl / hdLength` 等。
 
 ## HTTP API
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/ping` | 健康检查（不鉴权） |
+| POST | `/feishu/event` | 飞书事件回调（走飞书签名/Token 校验，不走本服务 token） |
 | GET | `/api/stats` | 消息数/图片数/`socketClients` |
+| GET | `/api/feishu` | 飞书机器人状态（push 模式/问答/Agent 后端/已推送数） |
 | GET | `/api/rooms` | 群聊列表 |
 | GET | `/api/messages?after=0&limit=1000&room=&q=` | 消息列表（响应不含 imageBase64） |
 | GET | `/api/quotes?after=0&limit=500&room=` | 报价条目（按 qseq 增量） |
@@ -70,35 +145,35 @@ ChatMessage 字段：`roomId / sender / content / type / createTime / msgSvrId`�
 | GET | `/images/<file>` | 图片文件 |
 | POST | `/` | 模块 HTTP 兜底上报 |
 
-启用 token 后，除 `/ping` 与静态页面外均需 `Authorization: Bearer <token>` 或 `?token=` 查询参数。
+启用 token 后，除 `/ping`、`/feishu/event` 与静态页面外均需 `Authorization: Bearer <token>` 或 `?token=` 查询参数。
 
-## 报价 Agent
+## 飞书事件安全说明
 
-配置 `agent.config.json`（参考 `agent.config.json.example`，已 gitignore）：
+- 未配置 Encrypt Key：校验事件体里的 Verification Token（明文传输，仅建议内网调试用）
+- 配置 Encrypt Key（推荐）：校验 `X-Lark-Signature`（sha256(timestamp+nonce+encrypt_key+原始body)），再 AES-256-CBC 解密（key=sha256(encrypt_key)）；同时事件按 `event_id` 幂等去重
 
-```json
-{
-  "enabled": true,
-  "base_url": "https://your-openai-compatible-endpoint/v1",
-  "api_key": "sk-...",
-  "model": "your-vision-capable-model"
-}
+## 开发与测试
+
+```bash
+.venv/bin/python -m unittest discover -s tests -v   # 28 个测试：桥/插件/飞书事件/推送链路，全部离线
+python3 -m server.quote_agent --backfill           # 历史回填（全量重建报价）
 ```
-
-- 文本消息即时分析；图片延迟约 10s 等同消息原图到达后取最佳版本
-- 模型需输出严格 JSON：`{"has_quote": false}` 或 `{"has_quote": true, "items": [{"项目","价格","单位","数量","备注"}]}`
-- 输出：`data/quotes/<roomId>.md`（按日期分节表格）+ `data/quotes/quotes.jsonl`（前端报价视图数据源）
-- 进度与日志：`data/quotes/state.json`、`data/quotes/agent.log`
-- 历史回填（全量重建）：`python3 -m server.quote_agent --backfill`
 
 ## 目录结构
 
 ```
 server/
-  sync_server.py   主入口（HTTP + 装配 + 鉴权）
+  sync_server.py   主入口（HTTP + 装配 + 鉴权 + 飞书 webhook 路由）
   relay.py         TCP 长连接监听
   store.py         消息存储（jsonl、图片、wxgf 解码、去重）+ QuoteLog
-  quote_agent.py   报价提取 Agent
+  quote_agent.py   报价提取 Agent（文本走 bridge，图片走视觉模型；on_quote 钩子）
+  pi_bridge.py     pi-agent SDK 桥：Agent 会话/工具/格式化，http/mock 降级
+  feishu.py        飞书客户端 + 机器人（推送队列/问答会话/事件验证解密）
+  bot_plugins.py   插件框架（PluginHost / PluginApi）
+plugins/           内置插件：help、quotes、rooms、stats、echo（开发模板）
 web/index.html     前端（消息流 + 报价视图）
+tests/             离线测试套件
 data/              运行数据（gitignore）
+feishu.config.json      飞书配置（gitignore，样例见 .example）
+agent.config.json       Agent 配置（gitignore，样例见 .example）
 ```

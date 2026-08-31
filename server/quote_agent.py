@@ -66,8 +66,12 @@ def load_config(path: str) -> dict | None:
         return None
     if not cfg.get("enabled"):
         return None
-    if not cfg.get("base_url") or not cfg.get("api_key") or not cfg.get("model"):
-        print(f"[quote_agent] 配置缺少 base_url/api_key/model: {path}", file=sys.stderr)
+    if not cfg.get("model"):
+        print(f"[quote_agent] 配置缺少 model: {path}", file=sys.stderr)
+        return None
+    provider = str(cfg.get("provider") or "http").lower()
+    if provider != "mock" and (not cfg.get("base_url") or not cfg.get("api_key")):
+        print(f"[quote_agent] 配置缺少 base_url/api_key: {path}", file=sys.stderr)
         return None
     return cfg
 
@@ -82,11 +86,13 @@ def md_cell(text) -> str:
 
 
 class QuoteAgent:
-    def __init__(self, config: dict, data_dir: str):
+    def __init__(self, config: dict, data_dir: str, on_quote=None, bridge=None):
         self.base_url = str(config["base_url"]).rstrip("/")
         self.api_key = str(config["api_key"])
         self.model = str(config["model"])
         self.data_dir = data_dir
+        self.bridge = bridge  # pi_bridge.PiBridge | None：文本消息走 Agent SDK
+        self.on_quote = [f for f in (on_quote or []) if callable(f)]
         self.quotes_dir = os.path.join(data_dir, "quotes")
         os.makedirs(self.quotes_dir, exist_ok=True)
         self.log_path = os.path.join(self.quotes_dir, "agent.log")
@@ -211,9 +217,23 @@ class QuoteAgent:
         if items:
             self._write_md(rec, items)
             self._append_jsonl(rec, items)
+            self._emit_quote(rec, items)
             self._log(f"quote seq={rec.get('seq')} room={msg.get('roomId')} items={len(items)}")
         else:
             self._log(f"no-quote seq={rec.get('seq')}")
+
+    def _emit_quote(self, rec: dict, items: list[dict]):
+        """把本轮提取到的报价行转发给 on_quote 钩子（如飞书推送）。"""
+        if not self.on_quote:
+            return
+        rows = self._quote_rows(rec, items)
+        if not rows:
+            return
+        for fn in self.on_quote:
+            try:
+                fn(rows)
+            except Exception as e:
+                self._log(f"on_quote hook failed: {e}")
 
     def _mark_processed(self, rec: dict, svr: str = "", size: int = 0):
         seq = rec.get("seq")
@@ -259,6 +279,15 @@ class QuoteAgent:
         return self._parse_items(content)
 
     def _call_llm(self, user_content) -> str | None:
+        # 文本消息优先走 pi-agent SDK 桥（若已接入），失败退回原生 urllib 路径
+        bridge = getattr(self, "bridge", None)
+        if bridge is not None and isinstance(user_content, str):
+            try:
+                out = bridge.complete_chat(SYSTEM_PROMPT, user_content)
+                if out:
+                    return out
+            except Exception as e:
+                self._log(f"bridge call failed, fallback native: {e}")
         body = json.dumps({
             "model": self.model,
             "messages": [
@@ -351,7 +380,8 @@ class QuoteAgent:
 
     # ---------- 结构化输出（供 /api/quotes 与前端「报价」页） ----------
 
-    def _append_jsonl(self, rec: dict, items: list[dict]):
+    def _quote_rows(self, rec: dict, items: list[dict]) -> list[dict]:
+        """把 rec + items 展开成报价行（无 qseq；jsonl 与 on_quote 钩子共用）。"""
         msg = rec.get("msg") or {}
         t = msg.get("createTime") or rec.get("receivedAt") or 0
         if msg.get("type") == 3:
@@ -367,13 +397,19 @@ class QuoteAgent:
             "summary": summary,
             "msgSeq": rec.get("seq"),
         }
-        lines = []
+        rows = []
         for it in items:
-            self._qseq += 1
             row = dict(base)
-            row["qseq"] = self._qseq
             for k in ("项目", "价格", "单位", "数量", "备注"):
                 row[k] = str(it.get(k) or "")
+            rows.append(row)
+        return rows
+
+    def _append_jsonl(self, rec: dict, items: list[dict]):
+        lines = []
+        for row in self._quote_rows(rec, items):
+            self._qseq += 1
+            row["qseq"] = self._qseq
             lines.append(json.dumps(row, ensure_ascii=False))
         try:
             with open(self.quotes_jsonl, "a", encoding="utf-8") as f:
@@ -382,13 +418,15 @@ class QuoteAgent:
             self._log(f"quotes.jsonl append failed: {e}")
 
 
-def create_agent(config_path: str, data_dir: str) -> QuoteAgent | None:
-    """供 chat_viewer 内嵌使用；配置缺失/未启用时返回 None。"""
+def create_agent(config_path: str, data_dir: str, on_quote=None, bridge=None) -> QuoteAgent | None:
+    """供 chat_viewer 内嵌使用；配置缺失/未启用时返回 None。
+    on_quote: quote 行列表 -> None 的钩子（飞书推送）；bridge: 可选 PiBridge。"""
     cfg = load_config(config_path)
     if not cfg:
         return None
-    agent = QuoteAgent(cfg, data_dir)
-    print(f"[sync_server] quote agent enabled: model={agent.model} -> {agent.quotes_dir}")
+    agent = QuoteAgent(cfg, data_dir, on_quote=on_quote, bridge=bridge)
+    kind = "bridge:" + bridge.backend_kind if bridge is not None else "native"
+    print(f"[sync_server] quote agent enabled: model={agent.model} ({kind}) -> {agent.quotes_dir}")
     return agent
 
 

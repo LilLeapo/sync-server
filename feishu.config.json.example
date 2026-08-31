@@ -1,0 +1,32 @@
+{
+  "enabled": false,
+
+  "app_id": "cli_xxxxxxxx",
+  "app_secret": "换你的 app_secret",
+  "verification_token": "事件订阅里的 Verification Token",
+  "encrypt_key": "",
+  "event_path": "/feishu/event",
+  "bot_open_id": "",
+
+  "push": {
+    "mode": "webhook",
+    "webhook_url": "https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx",
+    "webhook_secret": "",
+    "chat_id": ""
+  },
+
+  "push_rooms": ["*"],
+
+  "chat_room_map": {
+    "oc_飞书群chat_id": "微信群roomId或唯一片段"
+  },
+
+  "qna": {
+    "enabled": true,
+    "system_prompt": "你是绑在飞书群里的报价助理……（留空用默认）",
+    "recent_quotes": 20,
+    "session_ttl": 1800
+  },
+
+  "startup_notice": true
+}

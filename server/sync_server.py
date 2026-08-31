@@ -20,12 +20,14 @@ from urllib.parse import parse_qs
 try:
     from .relay import RelayListener
     from .store import Store, QuoteLog
-    from . import quote_agent
+    from . import quote_agent, pi_bridge, bot_plugins
+    from . import feishu as feishu_mod
 except ImportError:  # 允许 python3 server/sync_server.py 直接运行
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from server.relay import RelayListener
     from server.store import Store, QuoteLog
-    from server import quote_agent
+    from server import quote_agent, pi_bridge, bot_plugins
+    from server import feishu as feishu_mod
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -187,6 +189,13 @@ class Handler(BaseHTTPRequestHandler):
         count = self.server.store.clear(params.get("room") or None)
         self._json(200, {"ok": True, "count": count})
 
+    def _handle_feishu_status(self):
+        bot = getattr(self.server, "feishu_bot", None)
+        if bot is None:
+            self._json(200, {"ok": True, "feishu": {"enabled": False}})
+            return
+        self._json(200, {"ok": True, "feishu": bot.bot_status()})
+
     # ---------- 静态与图片 ----------
 
     def _handle_static(self, path: str):
@@ -241,6 +250,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/quotes":
             if self._require_auth():
                 self._handle_quotes()
+        elif path == "/api/feishu":
+            if self._require_auth():
+                self._handle_feishu_status()
         elif path.startswith("/images/"):
             if self._require_auth():
                 self._handle_image(path)
@@ -248,9 +260,16 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_static(path)  # 页面本身不鉴权，数据接口统一 401
 
     def do_POST(self):
+        path = self.path.split("?", 1)[0]
+        # 飞书事件 webhook：走飞书自己的验证（token/签名/加密），不套本服务鉴权
+        feishu_bot = getattr(self.server, "feishu_bot", None)
+        if feishu_bot is not None and path == feishu_bot.event_path:
+            raw = self._read_body()
+            code, text = feishu_bot.handle_webhook(self.headers, raw)
+            self._text(code, text, ctype="application/json; charset=utf-8")
+            return
         if not self._require_auth():
             return
-        path = self.path.split("?", 1)[0]
         if path == "/api/clear":
             self._handle_clear()
         else:
@@ -271,18 +290,49 @@ def main():
                     help="模块长连接监听端口，0 关闭")
     ap.add_argument("--agent-config", default=os.path.join(base, "agent.config.json"),
                     help="报价 Agent 配置（缺失或未启用则跳过）")
+    ap.add_argument("--feishu-config", default=os.path.join(base, "feishu.config.json"),
+                    help="飞书机器人配置（缺失或未启用则跳过）")
+    ap.add_argument("--plugins-dir", default=os.path.join(base, "plugins"),
+                    help="机器人插件目录")
     ap.add_argument("--token", default=os.environ.get("SYNC_TOKEN", ""),
                     help="鉴权 token（也可用环境变量 SYNC_TOKEN）；不传则无鉴权")
     args = ap.parse_args()
 
     os.makedirs(args.data_dir, exist_ok=True)
     store = Store(args.data_dir)
+    quote_log = QuoteLog(os.path.join(args.data_dir, "quotes", "quotes.jsonl"))
+
+    # Agent 桥（pi-agent SDK；agent.config.json 未启用时返回 None）
+    agent_cfg = quote_agent.load_config(args.agent_config)
+    bridge = pi_bridge.PiBridge.from_config(agent_cfg)
+    if bridge is not None:
+        print(f"[sync_server] agent bridge: {bridge.backend_kind}")
+
+    # 插件主机（可扩展性落点）
+    plugins = bot_plugins.PluginHost(args.plugins_dir)
+    plugins.load()
+
     server = ThreadingHTTPServer((args.bind, args.port), Handler)
     server.store = store
     server.web_dir = os.path.abspath(args.web_dir)
     server.token = args.token
-    server.agent = quote_agent.create_agent(args.agent_config, args.data_dir)
-    server.quote_log = QuoteLog(os.path.join(args.data_dir, "quotes", "quotes.jsonl"))
+    server.bridge = bridge
+    server.quote_log = quote_log
+
+    # 飞书机器人：报价推送 + 问答 + webhook 事件
+    server.feishu_bot = feishu_mod.create_feishu_bot(
+        args.feishu_config, store=store, quote_log=quote_log, bridge=bridge,
+        plugin_host=plugins, data_dir=args.data_dir)
+    if server.feishu_bot is not None:
+        plugins.bind(store=store, quote_log=quote_log, bridge=bridge,
+                     feishu_client=server.feishu_bot.client,
+                     feishu_cfg=server.feishu_bot.cfg, bot=server.feishu_bot)
+        server.agent = quote_agent.create_agent(
+            args.agent_config, args.data_dir,
+            on_quote=[server.feishu_bot.notify_quote], bridge=bridge)
+    else:
+        server.agent = quote_agent.create_agent(
+            args.agent_config, args.data_dir, bridge=bridge)
 
     if args.socket_port > 0:
         server.relay_listener = RelayListener(
@@ -293,7 +343,8 @@ def main():
 
     print(f"[sync_server] http on http://{args.bind}:{args.port}  "
           f"socket={'off' if args.socket_port <= 0 else f'{args.bind}:{args.socket_port}'}  "
-          f"auth={'token' if args.token else 'off'}  messages={len(store.messages)}")
+          f"auth={'token' if args.token else 'off'}  messages={len(store.messages)}  "
+          f"feishu={'on' if server.feishu_bot else 'off'}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
