@@ -187,6 +187,10 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_clear(self):
         params = self._params()
         count = self.server.store.clear(params.get("room") or None)
+        agent = getattr(self.server, "agent", None)
+        if agent is not None:
+            # 消息清空后 seq 重新计数，重置去重状态防止新消息被误判已处理
+            agent.reset_state()
         self._json(200, {"ok": True, "count": count})
 
     def _handle_feishu_status(self):

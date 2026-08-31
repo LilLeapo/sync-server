@@ -11,6 +11,7 @@
 
   "push": {
     "mode": "webhook",
+    "format": "llm",
     "webhook_url": "https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx",
     "webhook_secret": "",
     "chat_id": ""

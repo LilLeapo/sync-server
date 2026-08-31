@@ -37,8 +37,8 @@ QNA_SYSTEM = """你是绑在飞书群里的报价助理。只根据给定的资�
 FORMAT_SYSTEM = """你是报价推送格式化器。用户给出一个群聊中提取到的报价记录（JSON 数组），
 请整理成适合发到飞书群的纯文本消息，要求：
 - 不输出 JSON、代码块或任何解释，只输出最终文本；
-- 每一条报价单独一行，格式：「项目」价格 单位 ×数量 —— 备注（发送人，时间）；
-- 没有数量的省略 ×数量，没有备注的省略 —— 备注；
+- 每一条报价单独一行，格式：[供应商]「项目」价格 单位 ×数量 —— 备注（发送人，时间）；
+- 供应商为空时省略 [供应商] 前缀；没有数量的省略 ×数量，没有备注的省略 —— 备注；
 - 开头一行写「📊 新报价 · <房间名>」，结尾不要总结、不要客套。"""
 
 
@@ -54,7 +54,9 @@ def _extract_json(text: str) -> dict | None:
 
 def _fmt_row(r: dict) -> str:
     """把一条报价记录压成一行，缺字段自动省略。"""
-    parts = [str(r.get("项目") or ""), str(r.get("价格") or "")]
+    supplier = str(r.get("供应商") or "").strip()
+    head = f"[{supplier}] " if supplier else ""
+    parts = [head + str(r.get("项目") or ""), str(r.get("价格") or "")]
     delim = " "
     for key, prefix, suffix in (("单位", "", ""), ("数量", "×", "")):
         v = str(r.get(key) or "").strip()
@@ -371,7 +373,7 @@ class PiBridge:
 
     def format_quotes(self, room: str, rows: list[dict]) -> str:
         payload = [{
-            "项目": r.get("项目", ""), "价格": r.get("价格", ""),
+            "供应商": r.get("供应商", ""), "项目": r.get("项目", ""), "价格": r.get("价格", ""),
             "单位": r.get("单位", ""), "数量": r.get("数量", ""),
             "备注": r.get("备注", ""), "发送人": r.get("sender", ""),
             "时间": r.get("timeLabel", ""),

@@ -193,6 +193,7 @@ class FeishuBot:
 
         push = cfg.get("push") or {}
         self.push_mode = str(push.get("mode") or "none")
+        self.push_format = str(push.get("format") or "llm")
         self.webhook_url = str(push.get("webhook_url") or "")
         self.webhook_secret = str(push.get("webhook_secret") or "")
         self.push_chat_id = str(push.get("chat_id") or "")
@@ -260,6 +261,7 @@ class FeishuBot:
             "ws_connected": self.ws_connected,
             "ws_error": self.ws_error,
             "push_mode": self.push_mode,
+            "push_format": self.push_format,
             "qna_enabled": self.qna_enabled,
             "pushed": self.pushed,
             "agent": self.bridge.backend_kind if self.bridge else None,
@@ -724,7 +726,8 @@ class FeishuBot:
         self.log(f"推送失败 room={room}: {err}")
 
     def _format(self, room: str, rows: list[dict]) -> str:
-        if self.bridge is not None:
+        # push.format=template 时跳过 LLM 格式化，推送更快（模板也带供应商/发送人）
+        if self.bridge is not None and self.push_format != "template":
             try:
                 out = self.bridge.format_quotes(room, rows)
                 if out and out.strip():

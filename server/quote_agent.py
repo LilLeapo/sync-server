@@ -43,14 +43,15 @@ SYSTEM_PROMPT = """你是一个群聊消息报价信息提取助手。从群聊�
 规则：
 - 只输出 JSON，不要输出任何其他文字、解释或 markdown 代码块。
 - 没有报价信息时输出：{"has_quote": false}
-- 有报价信息时输出：{"has_quote": true, "items": [{"项目": "...", "价格": "...", "单位": "...", "数量": "...", "备注": "..."}]}
+- 有报价信息时输出：{"has_quote": true, "items": [{"项目": "...", "价格": "...", "单位": "...", "数量": "...", "备注": "...", "供应商": "..."}]}
+- “供应商”是消息里出现的商家/厂商名（如“富利铜业”），同一消息里所有条目一致时可都填；不明显则留空字符串。
 - “价格”保留原始币种与数值写法（如 12000、¥1.2万、$30）；“单位”如 元/月、元/件；“数量”无则留空字符串。
 - 一条消息含多个报价时 items 给多个；信息不全的字段留空字符串，不要编造。
 - 闲聊、转账凭证、无价格的内容都不算报价。"""
 
 IMAGE_USER_PROMPT = "提取这张群聊图片中的报价信息。按约定只输出 JSON。"
 
-MD_HEADER = "| 时间 | 发送人 | 项目 | 价格 | 单位 | 数量 | 备注 | 来源 | 原文摘要 |"
+MD_HEADER = "| 时间 | 发送人 | 供应商 | 项目 | 价格 | 单位 | 数量 | 备注 | 来源 | 原文摘要 |"
 MD_SEP = "|---|---|---|---|---|---|---|---|---|"
 
 
@@ -98,7 +99,7 @@ class QuoteAgent:
         self.log_path = os.path.join(self.quotes_dir, "agent.log")
         self.state_path = os.path.join(self.quotes_dir, "state.json")
         self.quotes_jsonl = os.path.join(self.quotes_dir, "quotes.jsonl")
-        self._qseq = self._count_lines(self.quotes_jsonl)
+        self._qseq = self._max_qseq(self.quotes_jsonl)
 
         self._heap = []  # (not_before, counter, rec)
         self._cv = threading.Condition()
@@ -119,6 +120,29 @@ class QuoteAgent:
                 return sum(1 for _ in f)
         except OSError:
             return 0
+
+    @staticmethod
+    def _max_qseq(path: str) -> int:
+        """qseq 取文件里已有的最大值，避免消息库重建/重启后从头计数。"""
+        m = 0
+        try:
+            with open(path, "rb") as f:
+                for line in f:
+                    try:
+                        v = int(json.loads(line).get("qseq") or 0)
+                    except Exception:
+                        continue
+                    if v > m:
+                        m = v
+            return m
+        except OSError:
+            return 0
+
+    def reset_state(self):
+        """消息库被清空（seq 重新计数）时重置去重状态，避免新消息被误判已处理。"""
+        self._processed.clear()
+        self._svr_state.clear()
+        self._save_state()
 
     def _load_state(self):
         try:
@@ -353,7 +377,8 @@ class QuoteAgent:
         for it in items:
             rows.append(
                 "| " + " | ".join([
-                    hm, md_cell(sender), md_cell(it.get("项目")), md_cell(it.get("价格")),
+                    hm, md_cell(sender), md_cell(it.get("供应商")), md_cell(it.get("项目")),
+                    md_cell(it.get("价格")),
                     md_cell(it.get("单位")), md_cell(it.get("数量")), md_cell(it.get("备注")),
                     source, md_cell(summary),
                 ]) + " |"
@@ -400,7 +425,7 @@ class QuoteAgent:
         rows = []
         for it in items:
             row = dict(base)
-            for k in ("项目", "价格", "单位", "数量", "备注"):
+            for k in ("供应商", "项目", "价格", "单位", "数量", "备注"):
                 row[k] = str(it.get(k) or "")
             rows.append(row)
         return rows
@@ -514,7 +539,8 @@ def backfill(config_path: str, data_dir: str):
             for it in items:
                 rows.append(
                     "| " + " | ".join([
-                        hm, md_cell(sender), md_cell(it.get("项目")), md_cell(it.get("价格")),
+                        hm, md_cell(sender), md_cell(it.get("供应商")), md_cell(it.get("项目")),
+                        md_cell(it.get("价格")),
                         md_cell(it.get("单位")), md_cell(it.get("数量")), md_cell(it.get("备注")),
                         source, md_cell(summary),
                     ]) + " |"
@@ -525,7 +551,7 @@ def backfill(config_path: str, data_dir: str):
                     "summary": "" if msg.get("type") == 3 else one_line(msg.get("content") or ""),
                     "msgSeq": rec.get("seq"),
                 }
-                for k in ("项目", "价格", "单位", "数量", "备注"):
+                for k in ("供应商", "项目", "价格", "单位", "数量", "备注"):
                     jrow[k] = str(it.get(k) or "")
                 flat_rows.append(jrow)
             done += 1
