@@ -66,6 +66,20 @@ python3 -m server.sync_server --feishu-config ./feishu.config.json
 
 验证：群里发一条含报价的消息 → 手机模块上报 → Agent 提取 → 自定义机器人推送；群里 `@机器人 /help` 或私聊机器人提问。
 
+## 钉钉机器人接入
+
+1. **群推送（自定义机器人）**：钉钉群 → 群设置 → 智能群助手 → 添加机器人 → 自定义 → 复制 webhook 里的 `access_token`；若开了加签，复制加签密钥填 `webhook.secret`。报价推送走这个通道。
+2. **收消息/问答（企业内部应用机器人，可选）**：钉钉开发者后台创建企业内部应用，开通机器人能力，复制 `AppKey/AppSecret` 填 `app.client_id / client_secret`；`mode: "stream"` 用官方 `dingtalk-stream` SDK 长连接（无需公网地址），`mode: "webhook"` 只推送不收消息。
+3. **配置并重启**：
+
+```bash
+cp dingtalk.config.json.example dingtalk.config.json   # enabled: true
+pip install dingtalk-stream                             # 仅 stream 模式需要
+systemctl restart wabtest-sync
+```
+
+验证：`GET /api/dingtalk` 看 `push_configured / ws_connected`；群机器人收到报价推送，`mode=stream` 时群里 @机器人 `/help` 可问答（Agent 与飞书共用同一套 bridge）。
+
 ## Agent（pi-agent SDK）
 
 报价格式化与飞书问答统一走 `server/pi_bridge.py` 桥，可选两种后端（`agent.config.json` 的 `provider`）：

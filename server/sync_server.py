@@ -22,12 +22,14 @@ try:
     from .store import Store, QuoteLog
     from . import quote_agent, pi_bridge, bot_plugins
     from . import feishu as feishu_mod
+    from . import dingtalk as dingtalk_mod
 except ImportError:  # 允许 python3 server/sync_server.py 直接运行
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from server.relay import RelayListener
     from server.store import Store, QuoteLog
     from server import quote_agent, pi_bridge, bot_plugins
     from server import feishu as feishu_mod
+    from server import dingtalk as dingtalk_mod
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -200,6 +202,13 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._json(200, {"ok": True, "feishu": bot.bot_status()})
 
+    def _handle_dingtalk_status(self):
+        bot = getattr(self.server, "dingtalk_bot", None)
+        if bot is None:
+            self._json(200, {"ok": True, "dingtalk": {"enabled": False}})
+            return
+        self._json(200, {"ok": True, "dingtalk": bot.bot_status()})
+
     # ---------- 静态与图片 ----------
 
     def _handle_static(self, path: str):
@@ -257,6 +266,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/feishu":
             if self._require_auth():
                 self._handle_feishu_status()
+        elif path == "/api/dingtalk":
+            if self._require_auth():
+                self._handle_dingtalk_status()
         elif path.startswith("/images/"):
             if self._require_auth():
                 self._handle_image(path)
@@ -296,6 +308,8 @@ def main():
                     help="报价 Agent 配置（缺失或未启用则跳过）")
     ap.add_argument("--feishu-config", default=os.path.join(base, "feishu.config.json"),
                     help="飞书机器人配置（缺失或未启用则跳过）")
+    ap.add_argument("--dingtalk-config", default=os.path.join(base, "dingtalk.config.json"),
+                    help="钉钉机器人配置（缺失或未启用则跳过）")
     ap.add_argument("--plugins-dir", default=os.path.join(base, "plugins"),
                     help="机器人插件目录")
     ap.add_argument("--token", default=os.environ.get("SYNC_TOKEN", ""),
@@ -327,17 +341,23 @@ def main():
     server.feishu_bot = feishu_mod.create_feishu_bot(
         args.feishu_config, store=store, quote_log=quote_log, bridge=bridge,
         plugin_host=plugins, data_dir=args.data_dir)
+    on_quote = []
     if server.feishu_bot is not None:
         plugins.bind(store=store, quote_log=quote_log, bridge=bridge,
                      feishu_client=server.feishu_bot.client,
                      feishu_cfg=server.feishu_bot.cfg, bot=server.feishu_bot)
         server.feishu_bot.start_event_source()
-        server.agent = quote_agent.create_agent(
-            args.agent_config, args.data_dir,
-            on_quote=[server.feishu_bot.notify_quote], bridge=bridge)
-    else:
-        server.agent = quote_agent.create_agent(
-            args.agent_config, args.data_dir, bridge=bridge)
+        on_quote.append(server.feishu_bot.notify_quote)
+    # 钉钉机器人：报价推送（自定义机器人 webhook）+ Stream 长连接问答
+    server.dingtalk_bot = dingtalk_mod.create_dingtalk_bot(
+        args.dingtalk_config, store=store, quote_log=quote_log, bridge=bridge,
+        plugin_host=plugins, data_dir=args.data_dir)
+    if server.dingtalk_bot is not None:
+        server.dingtalk_bot.start()
+        on_quote.append(server.dingtalk_bot.notify_quote)
+    server.agent = quote_agent.create_agent(
+        args.agent_config, args.data_dir,
+        on_quote=on_quote or None, bridge=bridge)
 
     if args.socket_port > 0:
         server.relay_listener = RelayListener(
@@ -349,7 +369,8 @@ def main():
     print(f"[sync_server] http on http://{args.bind}:{args.port}  "
           f"socket={'off' if args.socket_port <= 0 else f'{args.bind}:{args.socket_port}'}  "
           f"auth={'token' if args.token else 'off'}  messages={len(store.messages)}  "
-          f"feishu={'on' if server.feishu_bot else 'off'}")
+          f"feishu={'on' if server.feishu_bot else 'off'} "
+          f"dingtalk={'on' if server.dingtalk_bot else 'off'}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

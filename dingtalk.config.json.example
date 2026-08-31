@@ -1,0 +1,25 @@
+{
+  "enabled": false,
+  "mode": "webhook",
+
+  "webhook": {
+    "access_token": "群自定义机器人的 access_token（webhook 里问号后的值）",
+    "secret": "加签密钥；未开加签留空"
+  },
+
+  "app": {
+    "client_id": "企业内部应用 AppKey（Stream 长连接收消息用）",
+    "client_secret": "企业内部应用 AppSecret"
+  },
+
+  "push_rooms": ["*"],
+  "chat_room_map": {},
+
+  "qna": {
+    "enabled": true,
+    "system_prompt": "",
+    "session_ttl": 1800
+  },
+
+  "startup_notice": true
+}
