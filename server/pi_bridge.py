@@ -70,8 +70,14 @@ def _fmt_row(r: dict) -> str:
     return delim.join(x for x in parts if x) + ((" —— " + tail) if tail else "")
 
 
+def room_label(room: str, rows: list[dict]) -> str:
+    """推送展示用群名：模块回传的群名称优先，回退到 roomId（去 @chatroom）。"""
+    name = str((rows[0] if rows else {}).get("roomName") or "").strip()
+    return name or str(room or "unknown").replace("@chatroom", "")
+
+
 def fallback_format(room: str, rows: list[dict]) -> str:
-    lines = [f"📊 新报价 · {room}", ""]
+    lines = [f"📊 新报价 · {room_label(room, rows)}", ""]
     for r in rows:
         lines.append(_fmt_row(r))
     return "\n".join(lines)
@@ -381,7 +387,7 @@ class PiBridge:
         try:
             out = self.complete_chat(
                 FORMAT_SYSTEM,
-                f"房间：{room}\n" + json.dumps(payload, ensure_ascii=False))
+                f"房间：{room_label(room, rows)}\n" + json.dumps(payload, ensure_ascii=False))
             if out and out.strip():
                 return out.strip()
         except Exception as e:

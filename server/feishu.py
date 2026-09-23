@@ -86,6 +86,12 @@ def now_label(ms) -> str:
         return ""
 
 
+def _room_name(row: dict) -> str:
+    """群展示名：模块回传的群名称优先，回退到 roomId（去 @chatroom 后缀）。"""
+    return str(row.get("roomName") or "").strip() or \
+        str(row.get("roomId") or "").replace("@chatroom", "")
+
+
 # ---------------------------------------------------------------------------
 # 客户端
 # ---------------------------------------------------------------------------
@@ -580,7 +586,7 @@ class FeishuBot:
         rows, _ = self.quote_log.list(0, 2000) if self.quote_log else ([], 0)
         picked = [r for r in rows if (
             not kw or kw in " ".join(str(r.get(k) or "") for k in
-                                     ("项目", "备注", "sender", "单位", "价格")).lower())]
+                                     ("项目", "备注", "sender", "roomName", "单位", "价格")).lower())]
         return self._rows_text(picked[:limit]) or "没有找到匹配的报价。"
 
     def _tool_latest_quotes(self, params: dict) -> str:
@@ -598,8 +604,7 @@ class FeishuBot:
         rooms = self.store.rooms()[:8]
         lines = [f"累计消息 {stats.get('count', 0)} 条，图片 {stats.get('images', 0)} 张。"]
         if rooms:
-            lines.append("活跃群：" + "、".join(
-                str(r.get("roomId") or "").replace("@chatroom", "") for r in rooms))
+            lines.append("活跃群：" + "、".join(_room_name(r) for r in rooms))
         return "\n".join(lines)
 
     @staticmethod
@@ -625,7 +630,7 @@ class FeishuBot:
             rooms = self.store.rooms()
             if rooms:
                 parts.append("已接入的微信群：" + "、".join(
-                    str(r.get("roomId") or "").replace("@chatroom", "") for r in rooms[:10]))
+                    _room_name(r) for r in rooms[:10]))
         return "\n".join(parts) or None
 
     def _room_for_chat(self, chat_id: str) -> str | None:

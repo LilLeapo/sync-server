@@ -86,6 +86,17 @@ def md_cell(text) -> str:
     return str(text or "").replace("|", "\\|").replace("\n", " ").strip()
 
 
+def sender_display(msg: dict) -> str:
+    """发送者展示名：模块回传的显示名优先，回退到 wxid。"""
+    return str(msg.get("senderName") or msg.get("sender") or "")
+
+
+def room_display(msg: dict) -> str:
+    """群展示名：模块回传的群名称优先，回退到 roomId（去掉 @chatroom 后缀）。"""
+    room = str(msg.get("roomId") or "unknown")
+    return str(msg.get("roomName") or room.replace("@chatroom", ""))
+
+
 class QuoteAgent:
     def __init__(self, config: dict, data_dir: str, on_quote=None, bridge=None):
         self.base_url = str(config["base_url"]).rstrip("/")
@@ -272,7 +283,7 @@ class QuoteAgent:
         msg = rec.get("msg") or {}
         t = msg.get("createTime") or rec.get("receivedAt")
         stamp = dt.datetime.fromtimestamp((t or 0) / 1000).strftime("%F %T")
-        sender = msg.get("sender") or ""
+        sender = sender_display(msg)
 
         if msg.get("type") == 3:
             img_file = rec.get("imgFile")
@@ -366,7 +377,7 @@ class QuoteAgent:
         t = msg.get("createTime") or rec.get("receivedAt") or 0
         day = dt.datetime.fromtimestamp(t / 1000).strftime("%F")
         hm = dt.datetime.fromtimestamp(t / 1000).strftime("%H:%M")
-        sender = msg.get("sender") or ""
+        sender = sender_display(msg)
         source = "图片" if msg.get("type") == 3 else "文字"
         if msg.get("type") == 3:
             summary = f"[原图](../{rec.get('imgFile')})" if rec.get("imgFile") else "（图片）"
@@ -391,7 +402,7 @@ class QuoteAgent:
                 existing = f.read()
 
         if not existing:
-            existing = f"# {room} 报价汇总\n"
+            existing = f"# {room_display(msg)} 报价汇总\n"
         if f"\n## {day}\n" in existing or existing.rstrip().endswith(f"## {day}"):
             body = existing if existing.endswith("\n") else existing + "\n"
             body += "\n".join(rows) + "\n"
@@ -416,7 +427,9 @@ class QuoteAgent:
         base = {
             "roomId": str(msg.get("roomId") or "unknown"),
             "time": t,
-            "sender": msg.get("sender") or "",
+            "sender": sender_display(msg),
+            "senderId": msg.get("sender") or "",
+            "roomName": room_display(msg),
             "source": "图片" if msg.get("type") == 3 else "文字",
             "imgFile": rec.get("imgFile"),
             "summary": summary,
@@ -527,14 +540,14 @@ def backfill(config_path: str, data_dir: str):
             t = msg.get("createTime") or rec.get("receivedAt") or 0
             day = dt.datetime.fromtimestamp(t / 1000).strftime("%F")
             hm = dt.datetime.fromtimestamp(t / 1000).strftime("%H:%M")
-            sender = msg.get("sender") or ""
+            sender = sender_display(msg)
             source = "图片" if msg.get("type") == 3 else "文字"
             if msg.get("type") == 3:
                 summary = f"[原图](../{rec.get('imgFile')})" if rec.get("imgFile") else "（图片）"
             else:
                 summary = one_line(msg.get("content") or "")
             days = tables.setdefault(room, {})
-            titles[room] = room
+            titles[room] = room_display(msg)
             rows = days.setdefault(day, [])
             for it in items:
                 rows.append(
@@ -546,7 +559,8 @@ def backfill(config_path: str, data_dir: str):
                     ]) + " |"
                 )
                 jrow = {
-                    "roomId": room, "time": t, "sender": sender, "source": source,
+                    "roomId": room, "time": t, "sender": sender, "senderId": msg.get("sender") or "",
+                    "roomName": room_display(msg), "source": source,
                     "imgFile": rec.get("imgFile"),
                     "summary": "" if msg.get("type") == 3 else one_line(msg.get("content") or ""),
                     "msgSeq": rec.get("seq"),

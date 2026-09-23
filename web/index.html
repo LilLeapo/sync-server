@@ -250,6 +250,10 @@
     background: var(--chip);
     font-size: 10px;
   }
+  .row__roomid {
+    font: 10px var(--mono);
+    color: var(--faint);
+  }
 
   .bubble {
     display: inline-block;
@@ -603,6 +607,19 @@
   function shortRoom(roomId) {
     return String(roomId || "未知群").replace(/@chatroom$/, "");
   }
+  // 群显示名：模块回传的群名称优先，否则回退到 roomId 去后缀
+  function roomLabel(rec) {
+    const m = (rec && rec.msg) || {};
+    return m.roomName || shortRoom(m.roomId);
+  }
+  function shortRoomName(room) {
+    return (room && room.roomName) || shortRoom(room && room.roomId);
+  }
+  // 发送者显示名：模块回传的名称优先，否则回退到 wxid
+  function senderLabel(m) {
+    const s = (m && m.sender) || "unknown";
+    return (m && m.senderName) || s;
+  }
   function isImage(rec) {
     return Number(rec.msg && rec.msg.type) === 3;
   }
@@ -764,7 +781,10 @@
     if (state.selectedRoom) list = list.filter((r) => r.msg.roomId === state.selectedRoom);
     if (state.search) {
       const q = state.search.toLowerCase();
-      list = list.filter((r) => (r.msg.content || "").toLowerCase().includes(q));
+      list = list.filter((r) =>
+        (r.msg.content || "").toLowerCase().includes(q) ||
+        senderLabel(r.msg).toLowerCase().includes(q) ||
+        roomLabel(r).toLowerCase().includes(q));
     }
     return list;
   }
@@ -780,7 +800,11 @@
       return;
     }
     const list = visibleMessages();
-    $("#roomTitle").textContent = state.selectedRoom ? shortRoom(state.selectedRoom) : "全部群聊";
+    const room = state.rooms.find((r) => r.roomId === state.selectedRoom);
+    const roomTitle = state.selectedRoom
+      ? (room ? shortRoomName(room) : shortRoom(state.selectedRoom))
+      : "全部群聊";
+    $("#roomTitle").textContent = roomTitle;
     $("#roomCount").textContent = list.length + " 条消息";
 
     if (!list.length) {
@@ -819,17 +843,19 @@
 
   function rowHtml(rec) {
     const m = rec.msg || {};
-    const sender = m.sender || "unknown";
+    const sender = senderLabel(m);
     const t = m.createTime || rec.receivedAt;
     const roomTag = state.selectedRoom
       ? ""
-      : '<span class="row__room">' + escapeHtml(shortRoom(m.roomId)) + "</span>";
+      : '<span class="row__room">' + escapeHtml(roomLabel(rec)) + "</span>" +
+        (m.roomName && m.roomId ? '<span class="row__roomid" title="' + escapeHtml(m.roomId) + '">' + escapeHtml(shortRoom(m.roomId)) + "</span>" : "");
+    const senderTitle = m.senderName && m.sender ? ' title="' + escapeHtml(m.sender) + '"' : "";
     return (
       '<div class="row" data-seq="' + rec.seq + '">' +
       '<div class="avatar" style="background:' + colorFor(sender) + '">' + escapeHtml(avatarChar(sender)) + "</div>" +
       '<div class="row__body">' +
       '<div class="row__meta">' +
-      '<span class="row__sender">' + escapeHtml(sender) + "</span>" +
+      '<span class="row__sender"' + senderTitle + '>' + escapeHtml(sender) + "</span>" +
       '<span title="' + escapeHtml(new Date(t).toLocaleString()) + '">' + fmtTime(t) + "</span>" +
       roomTag +
       "</div>" +
@@ -925,7 +951,7 @@
     if (state.search) {
       const q = state.search.toLowerCase();
       list = list.filter((r) =>
-        ((r["项目"] || "") + (r["备注"] || "") + (r.summary || "") + (r.sender || ""))
+        ((r["项目"] || "") + (r["备注"] || "") + (r.summary || "") + (r.sender || "") + (r.roomName || ""))
           .toLowerCase().includes(q));
     }
     return list;
@@ -943,7 +969,7 @@
     let html = "";
     let lastDate = "";
     let openTable = false;
-    const THEAD = "<thead><tr><th>时间</th><th>发送人</th><th>项目</th><th>价格</th><th>单位</th><th>数量</th><th>备注</th><th>来源</th><th>摘要</th></tr></thead>";
+    const THEAD = "<thead><tr><th>时间</th><th>发送人</th><th>群聊</th><th>项目</th><th>价格</th><th>单位</th><th>数量</th><th>备注</th><th>来源</th><th>摘要</th></tr></thead>";
     for (const r of list) {
       const d = fmtDate(r.time);
       if (d !== lastDate) {
@@ -968,7 +994,9 @@
     return (
       "<tr>" +
       '<td class="mono">' + fmtTime(r.time) + "</td>" +
-      '<td class="mono">' + escapeHtml(r.sender || "") + "</td>" +
+      '<td class="mono"' + (r.senderId && r.senderId !== r.sender ? ' title="' + escapeHtml(r.senderId) + '"' : "") + ">" +
+        escapeHtml(r.sender || "") + "</td>" +
+      '<td>' + escapeHtml(r.roomName || shortRoom(r.roomId)) + "</td>" +
       "<td>" + escapeHtml(r["项目"] || "") + "</td>" +
       '<td class="qprice">' + escapeHtml(r["价格"] || "") + "</td>" +
       "<td>" + escapeHtml(r["单位"] || "") + "</td>" +
@@ -983,16 +1011,17 @@
   function renderRooms() {
     let html = roomItemHtml(null, "全部群聊", state.total, unreadFor(null));
     for (const room of state.rooms) {
-      html += roomItemHtml(room.roomId, shortRoom(room.roomId), room.count, unreadFor(room.roomId));
+      html += roomItemHtml(room.roomId, shortRoomName(room), room.count, unreadFor(room.roomId), room.roomName);
     }
     roomList.innerHTML = html;
   }
 
-  function roomItemHtml(roomId, name, count, unread) {
+  function roomItemHtml(roomId, name, count, unread, roomName) {
     const active = state.selectedRoom === roomId ? " active" : "";
+    const title = roomName ? roomName + " (" + roomId + ")" : (roomId == null ? "" : roomId);
     return (
       '<button class="room' + active + '" data-room="' + (roomId == null ? "" : escapeHtml(roomId)) + '">' +
-      '<span class="room__name" title="' + (roomId == null ? "" : escapeHtml(roomId)) + '">' + escapeHtml(name) + "</span>" +
+      '<span class="room__name" title="' + escapeHtml(title) + '">' + escapeHtml(name) + "</span>" +
       '<span class="room__count">' + (count || 0) + "</span>" +
       (unread ? '<span class="room__unread">' + unread + "</span>" : "") +
       "</button>"
@@ -1105,7 +1134,9 @@
   }
 
   async function doClear() {
-    const scope = state.selectedRoom ? "「" + shortRoom(state.selectedRoom) + "」" : "全部群聊";
+    const scope = state.selectedRoom
+      ? "「" + (shortRoomName(state.rooms.find((r) => r.roomId === state.selectedRoom)) || shortRoom(state.selectedRoom)) + "」"
+      : "全部群聊";
     if (!window.confirm("确定清空" + scope + "的捕获记录？此操作不可恢复。")) return;
     const q = state.selectedRoom ? "?room=" + encodeURIComponent(state.selectedRoom) : "";
     await api("/api/clear" + q, { method: "POST" });

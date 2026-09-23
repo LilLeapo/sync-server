@@ -29,7 +29,7 @@ def _pick(api, kw="", limit=10):
     if kw:
         needle = kw.lower()
         rows = [r for r in rows if needle in " ".join(
-            str(r.get(k) or "") for k in ("项目", "备注", "sender", "单位", "价格")).lower()]
+            str(r.get(k) or "") for k in ("项目", "备注", "sender", "roomName", "单位", "价格")).lower()]
     return rows[-limit:]
 
 

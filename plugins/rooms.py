@@ -11,7 +11,8 @@ def register(api):
         limit = 15
         lines = [f"已接入 {len(rooms)} 个群，最近活跃的前 {min(limit, len(rooms))} 个："]
         for r in rooms[:limit]:
-            name = str(r.get("roomId") or "").replace("@chatroom", "")
+            name = str(r.get("roomName") or "").strip() or \
+                str(r.get("roomId") or "").replace("@chatroom", "")
             lines.append(f"- {name} · {r.get('count', 0)} 条")
         return "\n".join(lines)
 

@@ -91,6 +91,25 @@ systemctl restart wabtest-sync
 | `http` | 纯标准库 `urllib` 调 OpenAI 兼容 `/chat/completions` |
 | `mock` | pi-agent SDK 内置 mock provider（不联网，测试/演示用） |
 
+### 消息字段
+
+模块上行 `ChatMessage` JSON（HTTP 与 socket 同一格式）：
+
+```json
+{
+  "roomId": "49945523870@chatroom",
+  "roomName": "富利铜业报价群",
+  "sender": "wxid_fosies3z4gse22",
+  "senderName": "陈工",
+  "content": "无氧杆 2609合约+500",
+  "type": 1,
+  "createTime": 1700000000000,
+  "msgSvrId": 1234567890123456789
+}
+```
+
+`roomName` / `senderName` 是模块解析出的显示名（模块设置页「附带群名称/发送者名称」控制，模块版本 ≥ 1.1.0.r70），解析不出时为 `null`。服务端所有展示位置（网页消息行/房间列表/报价表、报价 md 标题与表格、`/rooms` `/quotes` 插件、飞书/钉钉推送与问答上下文）都优先用显示名，缺失时回退到 ID —— 因此**升级前的历史数据依然可用**，不会出现空白。
+
 ```json
 {
   "enabled": true,

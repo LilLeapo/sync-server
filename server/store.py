@@ -284,10 +284,14 @@ class Store:
         with self.lock:
             seen: dict[str, dict] = {}
             for r in self.messages:
-                rid = r["msg"].get("roomId") or "unknown"
-                entry = seen.setdefault(rid, {"roomId": rid, "count": 0, "lastAt": 0})
+                msg = r["msg"]
+                rid = msg.get("roomId") or "unknown"
+                entry = seen.setdefault(rid, {"roomId": rid, "count": 0, "lastAt": 0, "roomName": None})
                 entry["count"] += 1
-                t = r["msg"].get("createTime") or r["receivedAt"]
+                # 群名称可能只在部分记录里解析成功（旧数据/解析失败），取最新的非空值
+                if msg.get("roomName"):
+                    entry["roomName"] = msg["roomName"]
+                t = msg.get("createTime") or r["receivedAt"]
                 if t > entry["lastAt"]:
                     entry["lastAt"] = t
             return sorted(seen.values(), key=lambda e: e["lastAt"], reverse=True)
