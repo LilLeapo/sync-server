@@ -560,7 +560,7 @@
     quoteIds: new Set(),
     lastQseq: 0,
     lastSeen: {},          // roomId -> 已读到的 seq
-    nameBySender: {},      // sender -> 已学到的显示名（补齐旧消息）
+    nameBySender: {},      // "roomId\0sender" -> 已学到的显示名（补齐旧消息）
     polls: 0,
   };
 
@@ -618,11 +618,15 @@
   function shortRoomName(room) {
     return (room && room.roomName) || shortRoom(room && room.roomId);
   }
-  // 发送者显示名：本条消息带的名称优先；旧消息没带时用后学到的名称兜底
+  // 发送者显示名：本条消息带的名称优先；旧消息没带时用后学到的名称兜底。
+  // 键必须含 roomId：同一个人在不同群里群昵称可能不同，不能跨群共用。
+  function nameKey(m) {
+    return ((m && m.roomId) || "") + "\u0000" + ((m && m.sender) || "");
+  }
   function senderLabel(m) {
     const s = (m && m.sender) || "unknown";
     if (m && m.senderName) return m.senderName;
-    const learned = state.nameBySender[m && m.sender];
+    const learned = state.nameBySender[nameKey(m)];
     return learned || s;
   }
   function isImage(rec) {
@@ -655,9 +659,9 @@
     if (!rec || state.bySeq.has(rec.seq)) return;
     state.bySeq.set(rec.seq, rec);
     state.messages.push(rec);
-    // 记下新学到的发送者显示名，旧消息下次渲染时也能显示
+    // 记下新学到的发送者显示名（按 群+人 键，群昵称跨群不同），旧消息下次渲染时也能显示
     const lm = rec.msg || {};
-    if (lm.sender && lm.senderName) state.nameBySender[lm.sender] = lm.senderName;
+    if (lm.sender && lm.senderName) state.nameBySender[nameKey(lm)] = lm.senderName;
     if (!isImage(rec)) return;
     const svr = rec.msg.msgSvrId;
     if (!svr) return;
@@ -852,16 +856,19 @@
 
   function rowHtml(rec) {
     const m = rec.msg || {};
+    const senderId = m.sender || "unknown";
     const sender = senderLabel(m);
     const t = m.createTime || rec.receivedAt;
     const roomTag = state.selectedRoom
       ? ""
       : '<span class="row__room">' + escapeHtml(roomLabel(rec)) + "</span>" +
         (m.roomName && m.roomId ? '<span class="row__roomid" title="' + escapeHtml(m.roomId) + '">' + escapeHtml(shortRoom(m.roomId)) + "</span>" : "");
-    const senderTitle = m.senderName && m.sender ? ' title="' + escapeHtml(m.sender) + '"' : "";
+    // 头像用稳定的 wxid，保证同一个人在不同群里颜色/字母一致；
+    // 标题（hover）在显示名与 wxid 不同时给出真实 ID。
+    const senderTitle = sender !== senderId ? ' title="' + escapeHtml(senderId) + '"' : "";
     return (
       '<div class="row" data-seq="' + rec.seq + '">' +
-      '<div class="avatar" style="background:' + colorFor(sender) + '">' + escapeHtml(avatarChar(sender)) + "</div>" +
+      '<div class="avatar" style="background:' + colorFor(senderId) + '">' + escapeHtml(avatarChar(senderId)) + "</div>" +
       '<div class="row__body">' +
       '<div class="row__meta">' +
       '<span class="row__sender"' + senderTitle + '>' + escapeHtml(sender) + "</span>" +
