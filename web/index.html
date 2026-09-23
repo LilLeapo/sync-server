@@ -560,6 +560,7 @@
     quoteIds: new Set(),
     lastQseq: 0,
     lastSeen: {},          // roomId -> 已读到的 seq
+    nameBySender: {},      // sender -> 已学到的显示名（补齐旧消息）
     polls: 0,
   };
 
@@ -607,18 +608,22 @@
   function shortRoom(roomId) {
     return String(roomId || "未知群").replace(/@chatroom$/, "");
   }
-  // 群显示名：模块回传的群名称优先，否则回退到 roomId 去后缀
+  // 群显示名：本条消息带的名称优先；旧消息没带时，用同群任一已知群名兜底
   function roomLabel(rec) {
     const m = (rec && rec.msg) || {};
-    return m.roomName || shortRoom(m.roomId);
+    if (m.roomName) return m.roomName;
+    const known = state.rooms.find((r) => r.roomId === m.roomId);
+    return (known && known.roomName) || shortRoom(m.roomId);
   }
   function shortRoomName(room) {
     return (room && room.roomName) || shortRoom(room && room.roomId);
   }
-  // 发送者显示名：模块回传的名称优先，否则回退到 wxid
+  // 发送者显示名：本条消息带的名称优先；旧消息没带时用后学到的名称兜底
   function senderLabel(m) {
     const s = (m && m.sender) || "unknown";
-    return (m && m.senderName) || s;
+    if (m && m.senderName) return m.senderName;
+    const learned = state.nameBySender[m && m.sender];
+    return learned || s;
   }
   function isImage(rec) {
     return Number(rec.msg && rec.msg.type) === 3;
@@ -650,6 +655,9 @@
     if (!rec || state.bySeq.has(rec.seq)) return;
     state.bySeq.set(rec.seq, rec);
     state.messages.push(rec);
+    // 记下新学到的发送者显示名，旧消息下次渲染时也能显示
+    const lm = rec.msg || {};
+    if (lm.sender && lm.senderName) state.nameBySender[lm.sender] = lm.senderName;
     if (!isImage(rec)) return;
     const svr = rec.msg.msgSvrId;
     if (!svr) return;
@@ -667,6 +675,7 @@
     state.messages = [];
     state.bySeq.clear();
     state.imgBySvr.clear();
+    state.nameBySender = {};
     state.firstSeq = null;
     state.lastSeq = 0;
   }
