@@ -57,6 +57,21 @@ class TestDownlinkQueue(unittest.TestCase):
         b = _decode(self.listener._handle_frame(b'{"ping":true}'))["send"]["content"]
         self.assertEqual((a, b), ("1", "2"))
 
+    def test_replier_gets_inbound_message(self):
+        seen = []
+
+        class _Replier:
+            def enqueue(self, msg):
+                seen.append(msg)
+
+        listener = RelayListener("127.0.0.1", 0, _FakeStore(), replier=_Replier())
+        raw = json.dumps({
+            "roomId": "1@chatroom", "atMe": True, "content": "hi", "type": 1,
+        }).encode()
+        listener._handle_frame(raw)
+        self.assertEqual(seen[0]["content"], "hi")
+        self.assertTrue(seen[0]["atMe"])
+
 
 if __name__ == "__main__":
     unittest.main()

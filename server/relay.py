@@ -24,11 +24,13 @@ IDLE_TIMEOUT_S = 120  # 模块 30s 心跳，两倍余量判死
 
 
 class RelayListener:
-    def __init__(self, host: str, port: int, store: Store, agent=None, token: str = ""):
+    def __init__(self, host: str, port: int, store: Store, agent=None, token: str = "",
+                 replier=None):
         self.host = host
         self.port = port
         self.store = store
         self.agent = agent
+        self.replier = replier
         self.token = token or ""
         self._clients: set[socket.socket] = set()
         self._lock = threading.Lock()
@@ -135,6 +137,11 @@ class RelayListener:
         if self.agent is not None:
             try:
                 self.agent.enqueue(rec)
+            except Exception:
+                pass
+        if self.replier is not None:
+            try:
+                self.replier.enqueue(rec.get("msg") or msg)
             except Exception:
                 pass
         return self._ack({"seq": rec["seq"]}, downlink=True)
