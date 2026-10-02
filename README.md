@@ -153,9 +153,14 @@ systemctl restart wabtest-sync
   "content": "无氧杆 2609合约+500",
   "type": 1,
   "createTime": 1700000000000,
-  "msgSvrId": 1234567890123456789
+  "msgSvrId": 1234567890123456789,
+  "atMe": false,
+  "atAll": false,
+  "atUserList": "wxid_a,wxid_b"
 }
 ```
+
+`atMe` 为真表示这条群消息 @ 了模块所在微信号（含 @所有人）。配置了 Agent（`agent.config.json`）后，服务端只对「群聊 + `atMe` + 文本」调用 Agent 生成回复，经下行队列发回该群；私聊和没被 @ 的群消息不会自动回复。
 
 `roomName` / `senderName` 是模块解析出的显示名（模块设置页「附带群名称/发送者名称」控制，模块版本 ≥ 1.1.0.r70），解析不出时为 `null`。服务端所有展示位置（网页消息行/房间列表/报价表、报价 md 标题与表格、`/rooms` `/quotes` 插件、飞书/钉钉推送与问答上下文）都优先用显示名，缺失时回退到 ID —— 因此**升级前的历史数据依然可用**，不会出现空白。
 

@@ -20,7 +20,7 @@ from urllib.parse import parse_qs
 try:
     from .relay import RelayListener
     from .store import Store, QuoteLog
-    from . import quote_agent, pi_bridge, bot_plugins
+    from . import quote_agent, pi_bridge, bot_plugins, wechat_reply
     from . import feishu as feishu_mod
     from . import dingtalk as dingtalk_mod
     from . import wecom as wecom_mod
@@ -29,7 +29,7 @@ except ImportError:  # 允许 python3 server/sync_server.py 直接运行
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from server.relay import RelayListener
     from server.store import Store, QuoteLog
-    from server import quote_agent, pi_bridge, bot_plugins
+    from server import quote_agent, pi_bridge, bot_plugins, wechat_reply
     from server import feishu as feishu_mod
     from server import dingtalk as dingtalk_mod
     from server import wecom as wecom_mod
@@ -105,6 +105,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"ok": True, "dup": True})
             return
         self._notify_agent(rec)
+        self._notify_replier(rec)
         self._json(200, {"ok": True, "seq": rec["seq"]})
 
     def _notify_agent(self, rec: dict):
@@ -112,6 +113,14 @@ class Handler(BaseHTTPRequestHandler):
         if agent is not None:
             try:
                 agent.enqueue(rec)
+            except Exception:
+                pass
+
+    def _notify_replier(self, rec: dict):
+        replier = getattr(self.server, "wechat_replier", None)
+        if replier is not None:
+            try:
+                replier.enqueue(rec.get("msg") or {})
             except Exception:
                 pass
 
@@ -474,9 +483,19 @@ def main():
         args.agent_config, args.data_dir,
         on_quote=on_quote or None, bridge=bridge)
 
+    def _downlink(talker: str, content: str) -> bool:
+        listener = getattr(server, "relay_listener", None)
+        if listener is None:
+            return False
+        return listener.send(talker, content)
+
+    server.wechat_replier = (
+        wechat_reply.WechatReplier(bridge, _downlink) if bridge is not None else None)
+
     if args.socket_port > 0:
         server.relay_listener = RelayListener(
-            args.bind, args.socket_port, store, server.agent, token=args.token)
+            args.bind, args.socket_port, store, server.agent, token=args.token,
+            replier=server.wechat_replier)
         server.relay_listener.start()
     else:
         server.relay_listener = None
@@ -487,7 +506,8 @@ def main():
           f"feishu={'on' if server.feishu_bot else 'off'} "
           f"dingtalk={'on' if server.dingtalk_bot else 'off'} "
           f"wecom={'on' if server.wecom_bot else 'off'} "
-          f"ilink={'on' if server.ilink_bot else 'off'}")
+          f"ilink={'on' if server.ilink_bot else 'off'} "
+          f"wechat_reply={'on' if server.wechat_replier else 'off'}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
