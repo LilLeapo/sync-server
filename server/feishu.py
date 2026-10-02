@@ -420,6 +420,7 @@ class FeishuBot:
     def _dispatch(self, ev: dict):
         header = ev.get("header") or {}
         etype = header.get("event_type") or ev.get("type") or ""
+        self.log(f"收到飞书事件 type={etype}")
         if etype == "im.message.receive_v1":
             self._on_im_message(ev)
 
@@ -437,6 +438,7 @@ class FeishuBot:
         message_id = message.get("message_id") or ""
         chat_id = message.get("chat_id") or ""
         chat_type = message.get("chat_type") or "p2p"
+        self.log(f"收到消息 chat={chat_id} type={chat_type} sender={sender.get('sender_type')} text={self._extract_text(message)!r}")
         text = self._extract_text(message)
         if text is None:
             self.reply(message_id, "目前只支持文字消息，可以发文字试试～")
@@ -542,80 +544,13 @@ class FeishuBot:
 
     def _qa_tools(self) -> list[dict]:
         """给 Agent 的工具：检索报价 / 查群聊统计。handler 同步返回 str。"""
-        return [
-            {
-                "name": "search_quotes",
-                "label": "查报价",
-                "description": "按关键词检索已提取的报价记录（项目/备注/发送人/单位），返回匹配列表。参数 keyword 关键词、limit 1-30 条数。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "keyword": {"type": "string", "description": "检索关键词"},
-                        "limit": {"type": "integer", "description": "最多返回条数，默认 10"},
-                    },
-                },
-                "handler": self._tool_search_quotes,
-            },
-            {
-                "name": "latest_quotes",
-                "label": "最近报价",
-                "description": "返回最近的报价记录。参数 limit 1-30 条数，默认 10。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "limit": {"type": "integer", "description": "最多返回条数，默认 10"},
-                    },
-                },
-                "handler": self._tool_latest_quotes,
-            },
-            {
-                "name": "room_stats",
-                "label": "群聊统计",
-                "description": "查询群聊捕获统计：消息总数、图片数、活跃群列表。无参数。",
-                "parameters": {"type": "object", "properties": {}},
-                "handler": self._tool_room_stats,
-            },
-        ]
-
-    def _tool_search_quotes(self, params: dict) -> str:
-        kw = str(params.get("keyword") or "").strip().lower()
-        try:
-            limit = min(max(int(params.get("limit") or 10), 1), 30)
-        except (TypeError, ValueError):
-            limit = 10
-        rows, _ = self.quote_log.list(0, 2000) if self.quote_log else ([], 0)
-        picked = [r for r in rows if (
-            not kw or kw in " ".join(str(r.get(k) or "") for k in
-                                     ("项目", "备注", "sender", "roomName", "单位", "价格")).lower())]
-        return self._rows_text(picked[:limit]) or "没有找到匹配的报价。"
-
-    def _tool_latest_quotes(self, params: dict) -> str:
-        try:
-            limit = min(max(int(params.get("limit") or 10), 1), 30)
-        except (TypeError, ValueError):
-            limit = 10
-        rows, _ = self.quote_log.list(0, 2000) if self.quote_log else ([], 0)
-        return self._rows_text(rows[-limit:]) or "还没有报价记录。"
-
-    def _tool_room_stats(self, params: dict) -> str:
-        if not self.store:
-            return "存储不可用。"
-        stats = self.store.stats()
-        rooms = self.store.rooms()[:8]
-        lines = [f"累计消息 {stats.get('count', 0)} 条，图片 {stats.get('images', 0)} 张。"]
-        if rooms:
-            lines.append("活跃群：" + "、".join(_room_name(r) for r in rooms))
-        return "\n".join(lines)
+        from .qa_tools import build_qa_tools
+        return build_qa_tools(self.store, self.quote_log)
 
     @staticmethod
     def _rows_text(rows: list[dict]) -> str:
-        from .pi_bridge import _fmt_row
-        lines = []
-        for r in rows:
-            row = dict(r)
-            row["timeLabel"] = now_label(row.get("time"))
-            lines.append(_fmt_row(row))
-        return "\n".join(lines)
+        from .qa_tools import rows_text
+        return rows_text(rows)
 
     def _qa_context(self, chat_id: str) -> str | None:
         """给问答注入的背景：该群对应的微信房间的最近报价。"""

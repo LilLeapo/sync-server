@@ -1,0 +1,30 @@
+{
+  "enabled": false,
+
+  "bot_id": "企业微信智能机器人 BotID（管理后台 → 智能机器人 → 编辑页获取）",
+  "secret": "长连接专用 Secret（与 BotID 一起获取；仅用于长连接认证，请勿泄露）",
+  "ws_url": "wss://openws.work.weixin.qq.com",
+  "heartbeat_interval": 30,
+  "reconnect_max_interval": 60,
+
+  "push": {
+    "enabled": true,
+    "chat_id": "报价推送目标：群聊 chatid 或单聊 userid；留空则推给最近一次与机器人对话的会话",
+    "chat_type": 2
+  },
+
+  "push_rooms": ["*"],
+
+  "chat_room_map": {
+    "企业微信会话 chatid 或 userid": "微信群 roomId 或唯一片段"
+  },
+
+  "qna": {
+    "enabled": true,
+    "system_prompt": "",
+    "recent_quotes": 20,
+    "session_ttl": 1800
+  },
+
+  "welcome": "您好！我是报价助理，发送 /help 查看可用指令。"
+}

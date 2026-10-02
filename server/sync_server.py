@@ -23,6 +23,8 @@ try:
     from . import quote_agent, pi_bridge, bot_plugins
     from . import feishu as feishu_mod
     from . import dingtalk as dingtalk_mod
+    from . import wecom as wecom_mod
+    from . import ilink as ilink_mod
 except ImportError:  # 允许 python3 server/sync_server.py 直接运行
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from server.relay import RelayListener
@@ -30,6 +32,8 @@ except ImportError:  # 允许 python3 server/sync_server.py 直接运行
     from server import quote_agent, pi_bridge, bot_plugins
     from server import feishu as feishu_mod
     from server import dingtalk as dingtalk_mod
+    from server import wecom as wecom_mod
+    from server import ilink as ilink_mod
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -209,6 +213,52 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._json(200, {"ok": True, "dingtalk": bot.bot_status()})
 
+    def _handle_wecom_status(self):
+        bot = getattr(self.server, "wecom_bot", None)
+        if bot is None:
+            self._json(200, {"ok": True, "wecom": {"enabled": False}})
+            return
+        self._json(200, {"ok": True, "wecom": bot.bot_status()})
+
+    def _handle_ilink_status(self):
+        bot = getattr(self.server, "ilink_bot", None)
+        if bot is None:
+            self._json(200, {"ok": True, "ilink": {"enabled": False}})
+            return
+        self._json(200, {"ok": True, "ilink": bot.bot_status()})
+
+    def _handle_ilink_login_status(self):
+        bot = getattr(self.server, "ilink_bot", None)
+        if bot is None:
+            self._json(404, {"ok": False, "error": "ilink disabled"})
+            return
+        self._json(200, {"ok": True, **bot.login_status()})
+
+    def _handle_ilink_login_start(self):
+        bot = getattr(self.server, "ilink_bot", None)
+        if bot is None:
+            self._json(404, {"ok": False, "error": "ilink disabled"})
+            return
+        started = bot.start_login()
+        self._json(200, {"ok": True, "started": started, **bot.login_status()})
+
+    def _handle_ilink_qr(self):
+        bot = getattr(self.server, "ilink_bot", None)
+        try:
+            svg = bot.qr_svg() if bot is not None else None
+        except Exception as e:
+            self._text(500, f"qr error: {e}")
+            return
+        if not svg:
+            self._text(404, "no qr")
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "image/svg+xml; charset=utf-8")
+        self.send_header("Content-Length", str(len(svg)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(svg)
+
     # ---------- 静态与图片 ----------
 
     def _handle_static(self, path: str):
@@ -269,6 +319,18 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/dingtalk":
             if self._require_auth():
                 self._handle_dingtalk_status()
+        elif path == "/api/wecom":
+            if self._require_auth():
+                self._handle_wecom_status()
+        elif path == "/api/ilink":
+            if self._require_auth():
+                self._handle_ilink_status()
+        elif path == "/api/ilink/login":
+            if self._require_auth():
+                self._handle_ilink_login_status()
+        elif path == "/api/ilink/qr":
+            if self._require_auth():
+                self._handle_ilink_qr()
         elif path.startswith("/images/"):
             if self._require_auth():
                 self._handle_image(path)
@@ -290,6 +352,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_clear()
         elif path == "/api/send":
             self._handle_send()
+        elif path == "/api/ilink/login":
+            self._handle_ilink_login_start()
         else:
             self._handle_post()
 
@@ -336,6 +400,10 @@ def main():
                     help="飞书机器人配置（缺失或未启用则跳过）")
     ap.add_argument("--dingtalk-config", default=os.path.join(base, "dingtalk.config.json"),
                     help="钉钉机器人配置（缺失或未启用则跳过）")
+    ap.add_argument("--wecom-config", default=os.path.join(base, "wecom.config.json"),
+                    help="企业微信智能机器人配置（缺失或未启用则跳过）")
+    ap.add_argument("--ilink-config", default=os.path.join(base, "ilink.config.json"),
+                    help="微信 iLink 私聊通道配置（缺失或未启用则跳过）")
     ap.add_argument("--plugins-dir", default=os.path.join(base, "plugins"),
                     help="机器人插件目录")
     ap.add_argument("--token", default=os.environ.get("SYNC_TOKEN", ""),
@@ -381,6 +449,27 @@ def main():
     if server.dingtalk_bot is not None:
         server.dingtalk_bot.start()
         on_quote.append(server.dingtalk_bot.notify_quote)
+    # 企业微信智能机器人：WebSocket 长连接问答 + 主动推送
+    server.wecom_bot = wecom_mod.create_wecom_bot(
+        args.wecom_config, store=store, quote_log=quote_log, bridge=bridge,
+        plugin_host=plugins, data_dir=args.data_dir)
+    if server.wecom_bot is not None:
+        server.wecom_bot.start()
+        on_quote.append(server.wecom_bot.notify_quote)
+        if server.feishu_bot is None:
+            # 插件宿主还没有绑定任何机器人时，用企业微信机器人兜底
+            plugins.bind(store=store, quote_log=quote_log, bridge=bridge,
+                         wecom_client=server.wecom_bot.conn, bot=server.wecom_bot)
+    # 微信 iLink 私聊通道：扫码登录 + 长轮询问答 + 报价推送（仅私聊，不动抓群链路）
+    server.ilink_bot = ilink_mod.create_ilink_bot(
+        args.ilink_config, store=store, quote_log=quote_log, bridge=bridge,
+        plugin_host=plugins, data_dir=args.data_dir)
+    if server.ilink_bot is not None:
+        server.ilink_bot.start()
+        on_quote.append(server.ilink_bot.notify_quote)
+        if server.feishu_bot is None and server.wecom_bot is None:
+            plugins.bind(store=store, quote_log=quote_log, bridge=bridge,
+                         ilink_client=server.ilink_bot, bot=server.ilink_bot)
     server.agent = quote_agent.create_agent(
         args.agent_config, args.data_dir,
         on_quote=on_quote or None, bridge=bridge)
@@ -396,7 +485,9 @@ def main():
           f"socket={'off' if args.socket_port <= 0 else f'{args.bind}:{args.socket_port}'}  "
           f"auth={'token' if args.token else 'off'}  messages={len(store.messages)}  "
           f"feishu={'on' if server.feishu_bot else 'off'} "
-          f"dingtalk={'on' if server.dingtalk_bot else 'off'}")
+          f"dingtalk={'on' if server.dingtalk_bot else 'off'} "
+          f"wecom={'on' if server.wecom_bot else 'off'} "
+          f"ilink={'on' if server.ilink_bot else 'off'}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

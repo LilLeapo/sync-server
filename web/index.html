@@ -502,6 +502,47 @@
     cursor: pointer;
   }
 
+  /* ---------- iLink 扫码登录弹窗 ---------- */
+  .ilink-modal {
+    position: fixed; inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+    z-index: 70;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .ilink-modal[hidden] { display: none; }
+  .ilink-modal__box {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    width: 320px;
+    padding: 24px;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    text-align: center;
+  }
+  .ilink-modal__box b { font-size: 16px; }
+  .ilink-modal__close {
+    position: absolute; top: 8px; right: 12px;
+    border: 0; background: transparent; color: var(--muted);
+    font-size: 22px; line-height: 1; cursor: pointer;
+  }
+  .ilink-status { font-size: 13px; color: var(--muted); min-height: 18px; }
+  .ilink-qr { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  .ilink-qr img {
+    width: 220px; height: 220px;
+    background: #fff; border-radius: 8px; padding: 6px;
+  }
+  .ilink-qr span { font-size: 12px; color: var(--muted); }
+  .ilink-modal .btn.primary {
+    background: var(--accent); color: #fff; border-color: transparent;
+  }
+  .ilink-hint { font-size: 12px; color: var(--muted); }
+
   ::-webkit-scrollbar { width: 9px; height: 9px; }
   ::-webkit-scrollbar-thumb { background: rgba(128, 132, 140, 0.35); border-radius: 999px; border: 2px solid transparent; background-clip: content-box; }
 
@@ -554,6 +595,7 @@
       <span class="pill"><span class="dot" id="liveDot"></span><span id="liveText">离线</span></span>
       <button class="btn" id="stickBtn" title="有新消息时自动滚动到底部">自动滚动</button>
       <button class="btn" id="quotesBtn" title="查看 Agent 提取的报价">报价</button>
+      <button class="btn" id="ilinkBtn" title="微信 iLink 私聊机器人登录">微信扫码</button>
       <button class="btn" id="exportBtn">导出 JSON</button>
       <button class="btn danger" id="clearBtn">清空</button>
     </header>
@@ -576,6 +618,20 @@
 <div class="lightbox" id="lightbox">
   <button class="lightbox__close" id="lightboxClose">×</button>
   <img id="lightboxImg" alt="预览" />
+</div>
+
+<div class="ilink-modal" id="ilinkModal" hidden>
+  <div class="ilink-modal__box">
+    <button class="ilink-modal__close" id="ilinkClose" title="关闭">×</button>
+    <b>微信 iLink 私聊机器人</b>
+    <div class="ilink-status" id="ilinkStatus">—</div>
+    <div class="ilink-qr" id="ilinkQrWrap" hidden>
+      <img id="ilinkQr" alt="登录二维码" />
+      <span>用微信扫码登录（仅 1v1 私聊问答/推送，不影响群聊抓取）</span>
+    </div>
+    <button class="btn primary" id="ilinkLoginBtn">开始扫码登录</button>
+    <div class="ilink-hint">二维码 8 分钟内有效，过期可重新获取</div>
+  </div>
 </div>
 
 <div class="token-gate" id="tokenGate" hidden>
@@ -1339,7 +1395,93 @@
     if (e.key === "Escape") {
       closeLightbox();
       closeSidebar();
+      closeIlink();
     }
+  });
+
+  /* ---------- 微信 iLink 扫码登录 ---------- */
+
+  let ilinkTimer = null;
+
+  const ILINK_STATUS_LABEL = {
+    idle: "未登录",
+    starting: "正在获取二维码…",
+    waiting: "请用微信扫描二维码",
+    scanned: "已扫码，请在手机上确认",
+    refreshing: "二维码已刷新，请重新扫描",
+    redirected: "网络切换中，请稍候…",
+    success: "登录成功",
+    error: "登录失败",
+  };
+
+  function ilinkQrUrl() {
+    const base = localUrl("/api/ilink/qr");
+    return base + (base.indexOf("?") < 0 ? "?" : "&") + "t=" + Date.now();
+  }
+
+  async function refreshIlink() {
+    let st;
+    try {
+      st = await api("/api/ilink/login");
+    } catch (e) {
+      $("#ilinkStatus").textContent = "状态获取失败：" + e.message;
+      return;
+    }
+    const label = ILINK_STATUS_LABEL[st.status] || st.status;
+    const acct = st.account_id ? "（" + st.account_id + "）" : "";
+    let line = label + acct;
+    if (st.status === "error" && st.error) line += "：" + st.error;
+    if (st.ws_connected) line += " · 通道已连接";
+    $("#ilinkStatus").textContent = line;
+
+    const busy = ["starting", "waiting", "scanned", "refreshing", "redirected"];
+    const showQr = !!st.qr_content && busy.indexOf(st.status) >= 0;
+    $("#ilinkQrWrap").hidden = !showQr;
+    if (showQr) {
+      const img = $("#ilinkQr");
+      // 内容变化时才重载图像，避免轮询反复请求
+      if (img.dataset.qr !== st.qr_content) {
+        img.dataset.qr = st.qr_content;
+        img.src = ilinkQrUrl();
+      }
+    }
+    const btn = $("#ilinkLoginBtn");
+    btn.hidden = busy.indexOf(st.status) >= 0;
+    btn.textContent = (st.status === "success" || st.ws_connected) ? "重新登录" : "开始扫码登录";
+  }
+
+  function startIlinkPoll() {
+    if (!ilinkTimer) ilinkTimer = setInterval(refreshIlink, 2000);
+  }
+  function stopIlinkPoll() {
+    if (ilinkTimer) { clearInterval(ilinkTimer); ilinkTimer = null; }
+  }
+  function openIlink() {
+    $("#ilinkModal").hidden = false;
+    refreshIlink();
+    startIlinkPoll();
+  }
+  function closeIlink() {
+    const modal = $("#ilinkModal");
+    if (!modal || modal.hidden) return;
+    modal.hidden = true;
+    stopIlinkPoll();
+  }
+
+  $("#ilinkBtn").addEventListener("click", openIlink);
+  $("#ilinkClose").addEventListener("click", closeIlink);
+  $("#ilinkModal").addEventListener("click", (e) => {
+    if (e.target === $("#ilinkModal")) closeIlink();
+  });
+  $("#ilinkLoginBtn").addEventListener("click", async () => {
+    $("#ilinkStatus").textContent = "正在发起登录…";
+    try {
+      await api("/api/ilink/login", { method: "POST" });
+    } catch (e) {
+      $("#ilinkStatus").textContent = "发起失败：" + e.message;
+    }
+    refreshIlink();
+    startIlinkPoll();
   });
 
   /* ---------- 启动 ---------- */
@@ -1376,6 +1518,13 @@
           pollingStarted = true;
           setInterval(poll, POLL_MS);
         }
+        // iLink 未启用时隐藏扫码按钮
+        api("/api/ilink").then((d) => {
+          if (!d.ilink || !d.ilink.enabled) {
+            const b = $("#ilinkBtn");
+            if (b) b.hidden = true;
+          }
+        }).catch(() => {});
       })
       .catch((e) => {
         setOnline(false, e.message);

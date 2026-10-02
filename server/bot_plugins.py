@@ -16,7 +16,7 @@
       str  → 机器人回复该文本；False → 插件已自行处理；None → 继续走命令/问答
   register_quote_hook(fn)        fn(api, ctx) -> None | False
       ctx = {"room": str, "rows": [报价行...]}；返回 False 抑制默认群推送（插件自行推）
-  运行时对象：api.store / api.quotes / api.bridge / api.feishu / api.config / api.reply() / api.log()
+  运行时对象：api.store / api.quotes / api.bridge / api.feishu / api.wecom / api.ilink / api.config / api.reply() / api.log()
 
 加载策略：importlib 逐个加载，单个插件失败只告警不拖垮主体。
 """
@@ -39,6 +39,8 @@ class PluginApi:
         self.quotes = None
         self.bridge = None
         self.feishu = None
+        self.wecom = None
+        self.ilink = None
         self.config = None
         self.bot = None
         self.event = None
@@ -90,11 +92,13 @@ class PluginHost:
     # -- 装配运行时资源 -------------------------------------------
 
     def bind(self, *, store=None, quote_log=None, bridge=None, feishu_client=None,
-             feishu_cfg=None, bot=None):
+             feishu_cfg=None, bot=None, wecom_client=None, ilink_client=None):
         self.api.store = store
         self.api.quotes = quote_log
         self.api.bridge = bridge
         self.api.feishu = feishu_client
+        self.api.wecom = wecom_client
+        self.api.ilink = ilink_client
         self.api.config = feishu_cfg
         self.api.bot = bot
 
@@ -105,6 +109,8 @@ class PluginHost:
         api.quotes = self.api.quotes
         api.bridge = self.api.bridge
         api.feishu = self.api.feishu
+        api.wecom = self.api.wecom
+        api.ilink = self.api.ilink
         api.config = self.api.config
         api.bot = self.api.bot
         return api

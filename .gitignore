@@ -1,6 +1,9 @@
 data/
 agent.config.json
 feishu.config.json
+dingtalk.config.json
+wecom.config.json
+ilink.config.json
 .venv/
 __pycache__/
 *.pyc

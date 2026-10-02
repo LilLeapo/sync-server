@@ -1,0 +1,29 @@
+{
+  "enabled": false,
+
+  "accounts_dir": "data/ilink/accounts",
+  "credentials_file": "data/ilink/creds.json",
+  "auto_login": true,
+  "store_messages": true,
+
+  "allowed_users": [],
+
+  "push": {
+    "enabled": true,
+    "to": ["接收报价推送的用户 user_id（可多个）"],
+    "fallback_last": true
+  },
+
+  "push_rooms": ["*"],
+
+  "qna": {
+    "enabled": true,
+    "system_prompt": "",
+    "recent_quotes": 20,
+    "session_ttl": 1800,
+    "typing": true,
+    "typing_interval": 4
+  },
+
+  "startup_notice": false
+}
