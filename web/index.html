@@ -171,6 +171,7 @@
   }
   .btn:hover { background: var(--chip); }
   .btn.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-ink); }
+  .btn:disabled { opacity: 0.45; cursor: default; }
   .btn.danger { color: var(--danger); }
   .btn.danger:hover { border-color: var(--danger); }
   .icon-btn {
@@ -594,6 +595,7 @@
       <div class="spacer"></div>
       <span class="pill"><span class="dot" id="liveDot"></span><span id="liveText">离线</span></span>
       <button class="btn" id="stickBtn" title="有新消息时自动滚动到底部">自动滚动</button>
+      <button class="btn" id="replyBtn" title="群里被 @ 时由 Agent 自动回复">回复关</button>
       <button class="btn" id="quotesBtn" title="查看 Agent 提取的报价">报价</button>
       <button class="btn" id="ilinkBtn" title="微信 iLink 私聊机器人登录">微信扫码</button>
       <button class="btn" id="exportBtn">导出 JSON</button>
@@ -1232,8 +1234,38 @@
       state.stats = stats;
       $("#footStats").textContent = (stats.count || 0) + " 条 · 图片 " + (stats.images || 0) + " 张";
       if (state.online) setOnline(true); // socketClients 变化时刷新状态行
+      applyReply(stats);
     }
     $("#footHost").textContent = location.host;
+  }
+
+  function applyReply(stats) {
+    const btn = $("#replyBtn");
+    const available = !!(stats && stats.replyAvailable);
+    const on = !!(stats && stats.replyEnabled);
+    btn.disabled = !available;
+    btn.classList.toggle("on", available && on);
+    btn.textContent = !available ? "回复不可用" : (on ? "回复开" : "回复关");
+    btn.title = available
+      ? "点击切换：群里被 @ 时是否由 Agent 自动回复"
+      : "未配置 Agent，无法自动回复";
+  }
+
+  async function toggleReply() {
+    const btn = $("#replyBtn");
+    if (btn.disabled) return;
+    const next = !btn.classList.contains("on");
+    btn.disabled = true;
+    try {
+      const resp = await api("/api/reply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: next }),
+      });
+      applyReply({ replyAvailable: resp.available, replyEnabled: resp.enabled });
+    } finally {
+      if (state.stats && state.stats.replyAvailable) btn.disabled = false;
+    }
   }
 
   function scrollBottom() {
@@ -1376,6 +1408,7 @@
     if (nearBottom !== state.stick) setStick(nearBottom);
   });
 
+  $("#replyBtn").addEventListener("click", () => toggleReply().catch((e) => setOnline(false, e.message)));
   $("#quotesBtn").addEventListener("click", () => {
     state.view = state.view === "quotes" ? "messages" : "quotes";
     $("#quotesBtn").classList.toggle("on", state.view === "quotes");

@@ -180,10 +180,40 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_rooms(self):
         self._json(200, {"ok": True, "rooms": self.server.store.rooms()})
 
+    def _reply_view(self) -> dict:
+        replier = getattr(self.server, "wechat_replier", None)
+        if replier is None:
+            return {"available": False, "enabled": False}
+        return {"available": True, "enabled": bool(replier.enabled)}
+
     def _handle_stats(self):
         listener = getattr(self.server, "relay_listener", None)
         clients = listener.client_count() if listener else 0
-        self._json(200, {"ok": True, **self.server.store.stats(), "socketClients": clients})
+        reply = self._reply_view()
+        self._json(200, {
+            "ok": True, **self.server.store.stats(), "socketClients": clients,
+            "replyAvailable": reply["available"], "replyEnabled": reply["enabled"],
+        })
+
+    def _handle_reply_get(self):
+        self._json(200, {"ok": True, **self._reply_view()})
+
+    def _handle_reply_set(self):
+        replier = getattr(self.server, "wechat_replier", None)
+        if replier is None:
+            self._json(409, {"ok": False, "error": "agent not configured", "available": False, "enabled": False})
+            return
+        raw = self._read_body()
+        try:
+            body = json.loads(raw.decode("utf-8", "replace"))
+        except Exception:
+            self._json(400, {"ok": False, "error": "invalid json"})
+            return
+        if not isinstance(body, dict) or "enabled" not in body:
+            self._json(400, {"ok": False, "error": "missing enabled"})
+            return
+        enabled = replier.set_enabled(bool(body.get("enabled")))
+        self._json(200, {"ok": True, "available": True, "enabled": enabled})
 
     def _handle_quotes(self):
         params = self._params()
@@ -319,6 +349,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/stats":
             if self._require_auth():
                 self._handle_stats()
+        elif path == "/api/reply":
+            if self._require_auth():
+                self._handle_reply_get()
         elif path == "/api/quotes":
             if self._require_auth():
                 self._handle_quotes()
@@ -363,6 +396,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_send()
         elif path == "/api/ilink/login":
             self._handle_ilink_login_start()
+        elif path == "/api/reply":
+            self._handle_reply_set()
         else:
             self._handle_post()
 
@@ -490,7 +525,9 @@ def main():
         return listener.send(talker, content)
 
     server.wechat_replier = (
-        wechat_reply.WechatReplier(bridge, _downlink) if bridge is not None else None)
+        wechat_reply.WechatReplier(
+            bridge, _downlink, os.path.join(args.data_dir, "reply_switch.json"))
+        if bridge is not None else None)
 
     if args.socket_port > 0:
         server.relay_listener = RelayListener(

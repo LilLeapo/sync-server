@@ -88,6 +88,15 @@ class TestWechatReply(unittest.TestCase):
         self.assertIsNone(self.replier.handle(_msg(msgSvrId=1008)))
         self.assertEqual(self.sent, [])
 
+    def test_switch_off_skips_without_consuming(self):
+        self.assertTrue(self.replier.enabled)
+        self.replier.set_enabled(False)
+        self.assertIsNone(self.replier.handle(_msg(msgSvrId=1009)))
+        self.assertEqual(self.sent, [])
+        self.replier.set_enabled(True)
+        self.assertEqual(self.replier.handle(_msg(msgSvrId=1009)), "好的，我在")
+        self.assertEqual(len(self.sent), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

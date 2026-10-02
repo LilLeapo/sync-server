@@ -11,6 +11,8 @@
 """
 from __future__ import annotations
 
+import json
+import os
 import queue
 import sys
 import threading
@@ -23,10 +25,17 @@ MAX_REPLY_CHARS = 1500
 
 
 class WechatReplier:
-    def __init__(self, bridge, send):
-        """bridge: PiBridge（需有 begin_session）。send(talker, content) -> bool。"""
+    def __init__(self, bridge, send, state_path: str | None = None):
+        """bridge: PiBridge（需有 begin_session）。send(talker, content) -> bool。
+
+        state_path 记住网页开关；缺省文件时默认开启。
+        """
         self.bridge = bridge
         self.send = send
+        self._state_path = state_path
+        self._flag_lock = threading.Lock()
+        self._enabled = True
+        self._load()
         self._seen: set = set()
         self._seen_lock = threading.Lock()
         self._sessions: dict = {}
@@ -34,12 +43,50 @@ class WechatReplier:
         self._q: "queue.Queue[dict]" = queue.Queue()
         threading.Thread(target=self._loop, daemon=True, name="wechat-reply").start()
 
+    @property
+    def enabled(self) -> bool:
+        with self._flag_lock:
+            return self._enabled
+
+    def set_enabled(self, on: bool) -> bool:
+        on = bool(on)
+        with self._flag_lock:
+            self._enabled = on
+            self._save()
+        print(f"[wechat_reply] enabled={on}")
+        return on
+
+    def _load(self):
+        if not self._state_path or not os.path.isfile(self._state_path):
+            return
+        try:
+            with open(self._state_path, encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict) and "enabled" in data:
+                self._enabled = bool(data["enabled"])
+        except Exception as e:
+            print(f"[wechat_reply] 读取开关失败: {e}", file=sys.stderr)
+
+    def _save(self):
+        if not self._state_path:
+            return
+        try:
+            os.makedirs(os.path.dirname(self._state_path) or ".", exist_ok=True)
+            tmp = self._state_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"enabled": self._enabled}, f)
+            os.replace(tmp, self._state_path)
+        except Exception as e:
+            print(f"[wechat_reply] 保存开关失败: {e}", file=sys.stderr)
+
     def enqueue(self, msg: dict):
         if isinstance(msg, dict):
             self._q.put(msg)
 
     def handle(self, msg: dict) -> str | None:
-        """同步处理。不该回、或模型没给出文本时返回 None。"""
+        """同步处理。开关关闭、不该回、或模型没给出文本时返回 None。"""
+        if not self.enabled:
+            return None
         if not self._eligible(msg) or not self._mark(msg):
             return None
         text = self._answer(msg)
