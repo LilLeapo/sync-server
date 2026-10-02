@@ -6,7 +6,11 @@
   {"ping":true}                        心跳，回 {"ok":true}
   <ChatMessage JSON>                   消息，回 {"ok":true,"seq":N}
                                       （60s 内重复投递回 {"ok":true,"dup":true}）
+
+上行帧的 ack 可顺带携带一条下行发送指令：{"ok":true,"send":{"talker":"...","content":"..."}}。
+服务端通过 /api/send 入队，模块下次上行/心跳时取走。
 """
+import collections
 import hmac
 import json
 import socket
@@ -28,6 +32,23 @@ class RelayListener:
         self.token = token or ""
         self._clients: set[socket.socket] = set()
         self._lock = threading.Lock()
+        # 下行发送队列：服务端调用 send() 入队，每个已连接的模块在 ack 里取一条带走。
+        self._outbox: "collections.deque[dict]" = collections.deque()
+        self._outbox_lock = threading.Lock()
+
+    def send(self, talker: str, content: str) -> bool:
+        """下发一条发送指令；返回是否成功入队（后续由模块 ack 时取走）。"""
+        if not talker or not content:
+            return False
+        with self._outbox_lock:
+            self._outbox.append({"talker": talker, "content": content})
+        return True
+
+    def _next_send(self) -> dict | None:
+        with self._outbox_lock:
+            if not self._outbox:
+                return None
+            return self._outbox.popleft()
 
     def start(self):
         threading.Thread(target=self._accept_loop, daemon=True, name="relay-socket").start()
@@ -105,16 +126,27 @@ class RelayListener:
         if not isinstance(msg, dict):
             return b'{"ok":false,"error":"invalid frame"}'
         if "ping" in msg or "hello" in msg:
-            return b'{"ok":true}'
+            return self._ack(downlink=True)
         if not msg.get("roomId"):
             return b'{"ok":false,"error":"missing roomId"}'
         rec = self.store.add_message(msg)
         if rec is None:
-            return b'{"ok":true,"dup":true}'
+            return self._ack({"dup": True}, downlink=True)
         if self.agent is not None:
             try:
                 self.agent.enqueue(rec)
             except Exception:
                 pass
+        return self._ack({"seq": rec["seq"]}, downlink=True)
+
+    def _ack(self, extra: dict | None = None, downlink: bool = False) -> bytes:
+        """构造 ack；模块上行帧的 ack 可顺带携带一条下行发送指令。"""
+        obj = {"ok": True}
+        if extra:
+            obj.update(extra)
+        if downlink:
+            send = self._next_send()
+            if send is not None:
+                obj["send"] = send
         # Compact separators so naive clients matching the literal "ok":true still work.
-        return json.dumps({"ok": True, "seq": rec["seq"]}, separators=(",", ":")).encode()
+        return json.dumps(obj, separators=(",", ":")).encode()

@@ -288,8 +288,34 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/clear":
             self._handle_clear()
+        elif path == "/api/send":
+            self._handle_send()
         else:
             self._handle_post()
+
+    def _handle_send(self):
+        """让服务端安排一条消息发送：{"talker":"xxx@chatroom","content":"..."}。
+        指令入队，等模块下次上行/心跳的 ack 取走并调 SendMessage 发送。"""
+        listener = getattr(self.server, "relay_listener", None)
+        if listener is None:
+            self._json(503, {"ok": False, "error": "relay socket disabled"})
+            return
+        raw = self._read_body()
+        try:
+            msg = json.loads(raw.decode("utf-8", "replace"))
+        except Exception:
+            self._json(400, {"ok": False, "error": "invalid json"})
+            return
+        if not isinstance(msg, dict):
+            self._json(400, {"ok": False, "error": "invalid frame"})
+            return
+        talker = str(msg.get("talker") or "").strip()
+        content = str(msg.get("content") or "")
+        if not talker or not content:
+            self._json(400, {"ok": False, "error": "missing talker/content"})
+            return
+        listener.send(talker, content)
+        self._json(200, {"ok": True, "queued": True, "clients": listener.client_count()})
 
     def log_message(self, fmt, *args):
         pass

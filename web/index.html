@@ -350,6 +350,56 @@
     box-shadow: 0 6px 18px rgba(7, 193, 96, 0.35);
   }
 
+  /* ---------- 发送框 ---------- */
+  .composer {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 18px;
+    background: var(--card);
+    border-top: 1px solid var(--line);
+    flex-wrap: wrap;
+  }
+  .composer__to { display: flex; align-items: center; gap: 6px; }
+  .composer__to span { font: 11px var(--mono); color: var(--muted); white-space: nowrap; }
+  .composer__to input {
+    width: 200px;
+    padding: 8px 11px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: var(--bg);
+    color: var(--ink);
+    font: 12px var(--mono);
+    outline: none;
+  }
+  .composer__msg { flex: 1; display: flex; gap: 8px; min-width: 220px; }
+  .composer__to input:focus, .composer__msg input:focus { border-color: var(--accent); }
+  .composer__msg input {
+    flex: 1;
+    min-width: 0;
+    padding: 8px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: var(--bg);
+    color: var(--ink);
+    font-size: 13px;
+    outline: none;
+  }
+  .composer__send {
+    padding: 8px 18px;
+    border: 0;
+    border-radius: 8px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .composer__send:hover { background: var(--accent-ink); }
+  .composer__send:disabled { opacity: 0.6; cursor: default; }
+  .composer__status { flex-basis: 100%; font: 11px var(--mono); color: var(--muted); }
+  .composer__status.ok { color: var(--accent-ink); }
+  .composer__status.err { color: var(--danger); }
+
   /* 报价表格 */
   .qtable {
     width: 100%;
@@ -508,6 +558,17 @@
       <button class="btn danger" id="clearBtn">清空</button>
     </header>
     <section class="feed" id="feed"></section>
+    <div class="composer">
+      <label class="composer__to">
+        <span>发送到</span>
+        <input id="sendTo" type="text" placeholder="群 xxx@chatroom / 单聊 wxid" autocomplete="off" />
+      </label>
+      <div class="composer__msg">
+        <input id="sendText" type="text" placeholder="输入要发送的消息…" autocomplete="off" />
+        <button class="composer__send" id="sendBtn">发送</button>
+      </div>
+      <div class="composer__status" id="sendStatus"></div>
+    </div>
     <button class="jump" id="jumpBtn" hidden>↓ 回到最新</button>
   </main>
 </div>
@@ -1063,8 +1124,51 @@
     state.selectedRoom = roomId;
     if (roomId) state.lastSeen[roomId] = state.lastSeq;
     else for (const r of state.rooms) state.lastSeen[r.roomId] = state.lastSeq;
+    syncSendTarget();
     closeSidebar();
     renderAll();
+  }
+
+  /* ---------- 发送框 ---------- */
+
+  // 选中群聊后自动把发送目标填进输入框，减少手抄 roomId
+  function syncSendTarget() {
+    if (!state.selectedRoom) return;
+    const input = $("#sendTo");
+    if (input) input.value = state.selectedRoom;
+  }
+
+  async function sendMessage() {
+    const to = $("#sendTo").value.trim();
+    const text = $("#sendText").value;
+    const status = $("#sendStatus");
+    const btn = $("#sendBtn");
+    if (!to || !text) {
+      status.className = "composer__status err";
+      status.textContent = "发送目标和内容都不能为空";
+      return;
+    }
+    btn.disabled = true;
+    status.className = "composer__status";
+    status.textContent = "已入队，等待手机端取走…";
+    try {
+      const resp = await api("/api/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ talker: to, content: text }),
+      });
+      const clients = resp.clients || 0;
+      status.className = "composer__status ok";
+      status.textContent = clients > 0
+        ? "已入队（手机 socket 在线，下次上行/心跳取走）"
+        : "已入队，但手机 socket 未连接，可能收不到";
+      $("#sendText").value = "";
+    } catch (e) {
+      status.className = "composer__status err";
+      status.textContent = "发送失败: " + (e && e.message ? e.message : e);
+    } finally {
+      btn.disabled = false;
+    }
   }
 
   function updateFoot(stats) {
@@ -1241,6 +1345,11 @@
   /* ---------- 启动 ---------- */
 
   setStick(true);
+
+  $("#sendBtn").addEventListener("click", sendMessage);
+  $("#sendText").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") sendMessage();
+  });
 
   function showTokenGate() { $("#tokenGate").hidden = false; }
   function hideTokenGate() { $("#tokenGate").hidden = true; }
