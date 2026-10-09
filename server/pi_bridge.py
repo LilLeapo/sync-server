@@ -29,6 +29,8 @@ import threading
 import time
 import urllib.request
 
+from .quote_skill import quote_guidance
+
 DEFAULT_TIMEOUT_S = 90
 SESSION_HISTORY = 10  # 会话保留的问答对数（system 之外）
 QNA_SYSTEM = """你是绑在飞书群里的报价助理。只根据给定的资料回答，资料不足就直说没有查到，
@@ -101,12 +103,21 @@ class HttpBackend:
         self.timeout = timeout
 
     def complete(self, system: str | None, messages: list[dict], json_mode: bool = False) -> str | None:
+        return self.complete_response(system, messages, json_mode).get("content")
+
+    def complete_response(self, system: str | None, messages: list[dict], json_mode: bool = False,
+                          tools: list[dict] | None = None) -> dict:
         body = {
             "model": self.model,
             "messages": [{"role": "system", "content": system}] if system else [],
             "temperature": 0,
         }
-        body["messages"] += [{"role": m["role"], "content": m["content"]} for m in messages]
+        body["messages"] += messages
+        if tools:
+            body["tools"] = [{"type": "function", "function": {
+                "name": tool["name"], "description": tool.get("description", ""),
+                "parameters": tool.get("parameters") or {"type": "object", "properties": {}}
+            }} for tool in tools]
         if json_mode:
             body["response_format"] = {"type": "json_object"}
         req = urllib.request.Request(
@@ -120,7 +131,7 @@ class HttpBackend:
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-            return data["choices"][0]["message"]["content"]
+            return data["choices"][0]["message"]
         except Exception as e:
             raise BridgeError(f"http backend call failed: {e}") from e
 
@@ -277,6 +288,7 @@ class SessionBridge:
         self.system = system
         self.tools = tools
         self.history: list[dict] = []
+        self._lock = threading.Lock()
         if hasattr(owner.backend, "begin_session"):
             self._pi = owner.backend.begin_session(session_id, system, tools)
         else:
@@ -285,14 +297,41 @@ class SessionBridge:
     def ask(self, text: str, context: str | None = None) -> str | None:
         if self._pi is not None:
             return self._pi.ask(text, context)
+        with self._lock:
+            return self._ask_http(text, context)
+
+    def _ask_http(self, text: str, context: str | None = None) -> str | None:
         prompt = text
         if context:
             prompt = context + "\n\n" + text
         self.history.append({"role": "user", "content": prompt})
-        if len(self.history) > SESSION_HISTORY * 2:
-            del self.history[:-SESSION_HISTORY * 2]
+        starts = [i for i, msg in enumerate(self.history) if msg["role"] == "user"]
+        if len(starts) > SESSION_HISTORY:
+            del self.history[:starts[-SESSION_HISTORY]]
         try:
-            out = self.owner.backend.complete(self.system, self.history)
+            if self.tools and hasattr(self.owner.backend, "complete_response"):
+                handlers = {tool["name"]: tool["handler"] for tool in self.tools}
+                for _ in range(6):
+                    response = self.owner.backend.complete_response(self.system, self.history, tools=self.tools)
+                    calls = response.get("tool_calls") or []
+                    self.history.append({"role": "assistant", "content": response.get("content"),
+                                         **({"tool_calls": calls} if calls else {})})
+                    if not calls:
+                        return response.get("content")
+                    for call in calls:
+                        function = call.get("function") or {}
+                        try:
+                            handler = handlers[function["name"]]
+                            params = json.loads(function.get("arguments") or "{}")
+                            if not isinstance(params, dict):
+                                raise ValueError("tool arguments must be an object")
+                            output = str(handler(params))
+                        except Exception as exc:
+                            output = f"工具执行失败：{type(exc).__name__}: {exc}"
+                        self.history.append({"role": "tool", "tool_call_id": call["id"], "content": output})
+                out = "工具调用次数达到上限，请缩小查询范围。"
+            else:
+                out = self.owner.backend.complete(self.system, self.history)
         except BridgeError as e:
             self.owner.log(f"session {self.session_id} llm failed: {e}")
             out = None
@@ -373,6 +412,8 @@ class PiBridge:
 
     def begin_session(self, session_id: str, system: str = QNA_SYSTEM,
                       tools: list[dict] | None = None) -> SessionBridge:
+        if any(tool["name"] == "compare_quotes" for tool in (tools or [])):
+            system += "\n\n" + quote_guidance() + "\n询价比较调用compare_quotes，使用quote_evidence核查依据。latest_quotes/search_quotes是历史记录，不代表当前有效报价。不得把待确认方案当最低可采购价格，不得编造基准行情。"
         return SessionBridge(self, session_id, system, tools or [])
 
     # -- 报价格式化（LLM，失败自动降级模板） -------------------------

@@ -342,15 +342,19 @@ class QuoteLog:
         self.lock = threading.Lock()
         self.rows: list[dict] = []
         self.offset = 0
+        self._file_identity = None
 
     def _reload_locked(self):
         try:
-            size = os.path.getsize(self.path)
+            stat = os.stat(self.path)
+            size = stat.st_size
         except OSError:
             return
-        if size < self.offset:  # 文件被重建（backfill）
+        identity = (stat.st_dev, stat.st_ino)
+        if identity != self._file_identity or size < self.offset:  # 文件被重建（backfill）
             self.rows = []
             self.offset = 0
+            self._file_identity = identity
         if size == self.offset:
             return
         try:

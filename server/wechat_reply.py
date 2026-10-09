@@ -25,13 +25,15 @@ MAX_REPLY_CHARS = 1500
 
 
 class WechatReplier:
-    def __init__(self, bridge, send, state_path: str | None = None):
+    def __init__(self, bridge, send, state_path: str | None = None, *, store=None, quote_log=None):
         """bridge: PiBridge（需有 begin_session）。send(talker, content) -> bool。
 
         state_path 记住网页开关；缺省文件时默认开启。
         """
         self.bridge = bridge
         self.send = send
+        self.store = store
+        self.quote_log = quote_log
         self._state_path = state_path
         self._flag_lock = threading.Lock()
         self._enabled = True
@@ -150,7 +152,10 @@ class WechatReplier:
         with self._sessions_lock:
             sess = self._sessions.get(room)
             if sess is None:
-                sess = self.bridge.begin_session(f"wechat-{room}", WECHAT_REPLY_SYSTEM, [])
+                from .qa_tools import build_qa_tools
+                tools = build_qa_tools(self.store, self.quote_log) if self.quote_log is not None else []
+                system = WECHAT_REPLY_SYSTEM + f"\n当前微信群roomId：{room}。未指定其他群时查询使用这个room。"
+                sess = self.bridge.begin_session(f"wechat-{room}", system, tools)
                 self._sessions[room] = sess
             return sess
 

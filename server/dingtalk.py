@@ -300,10 +300,14 @@ class DingTalkBot:
                 entry[1] = time.time()
                 return entry[0]
         system = self.qna_system or QNA_SYSTEM
-        session = self.bridge.begin_session(f"dingtalk-{conv_id}", system)
+        session = self.bridge.begin_session(f"dingtalk-{conv_id}", system, self._qa_tools())
         with self._sessions_lock:
             self._sessions[conv_id] = [session, time.time()]
         return session
+
+    def _qa_tools(self) -> list[dict]:
+        from .qa_tools import build_qa_tools
+        return build_qa_tools(self.store, self.quote_log)
 
     def _qa_context(self, conv_id: str) -> str:
         """把最近的报价摘录给模型当上下文，保持与飞书问答接近的能力。"""

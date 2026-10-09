@@ -176,9 +176,15 @@ systemctl restart wabtest-sync
 
 - SDK 安装（可选，建议用 venv）：`python3 -m venv .venv && .venv/bin/pip install pi-agent lark-oapi`，然后用 `.venv/bin/python -m server.sync_server` 启动
 - 文本报价提取走桥（pi 后端 = SDK Agent 运行时）；**图片报价**仍走本服务的原生视觉调用（需视觉模型）
-- 模型输出严格 JSON：`{"has_quote": false}` 或 `{"has_quote": true, "items": [{"项目","价格","单位","数量","备注"}]}`
-- 飞书/钉钉/企业微信问答在多轮会话里注册了 3 个 Agent 工具：`search_quotes` / `latest_quotes` / `room_stats`（共用 `server/qa_tools.py`），模型可自行调用查实时数据
-- 输出：`data/quotes/<roomId>.md`、`data/quotes/quotes.jsonl`、`data/quotes/state.json`、`data/feishu|dingtalk|wecom|ilink/bot.log`、`data/*/push_state.json`、`data/ilink/state.json`
+- 模型输出严格 JSON：`{"events": []}` 或 `{"events": [{"event_type": "quote", "供应商": "...", "项目": "...", "价格": "...", "单位": "...", "数量": "...", "备注": "...", "evidence": "原文片段", "certainty": "explicit", "details": {...}}]}`。仍兼容旧 `has_quote/items` 输出，但缺少条件的旧数据不能直接用于采购排名。
+- 供应商 Skill：启动时加载 `.agents/skills/supplier-quote-analysis/SKILL.md` 及 `references/phrases-and-cases.md`，用于文本、图片提取和报价问答；修改后重启服务。两个文件需要随代码一起部署。
+- 事件类型包括报价、调价、条件更正、拒价、库存更新和采购记录。规则代码 `server/quote_rules.py` 校验证据、计算明确自提减价及品质加价、匹配唯一更新目标，并通过事件重放维护报价状态。推断、残缺预览、原始时间缺失、算术冲突和目标歧义保留为待确认，不自动套用供应商历史差价或税率。
+- 普通文本提供同群15分钟内最多6条相邻消息；合并转发按子消息拆分并隔离上下文、保留原始时间。引用正文和被引用正文分别提取，缺失的原始时间不使用转发时间冒充。转发中没有可访问文件的图片不能从XML占位内容还原报价。
+- 微信群被@问答、飞书、钉钉、企业微信和iLink共享 `server/qa_tools.py`，提供 `search_quotes` / `latest_quotes` / `room_stats` / `current_quotes` / `compare_quotes` / `quote_history` / `quote_evidence`；pi SDK和HTTP后端均可执行工具调用，HTTP每轮最多6次工具调用回合。
+- `compare_quotes` 按目的地或自提地、品质、交期、税票及数量要求返回组内排序、待确认和不符合要求的方案。不同产品、品牌、品质、交期、付款及税票条件分组，不作全局最低价排名。默认比较时点为现在、报价最大年龄24小时；历史分析指定 `as_of`（ISO时间）重放该时点的原始报价状态，`max_age_hours` 最大720小时。明确“发货”期限不能当“到货”期限，车数不自动转换吨数。库存或主体补充不刷新原报价的价格时间。
+- 本服务没有联网基准行情源。期货/现货均价换算需要调用方提供有出处的 `benchmark`（`name`, `contract`, `price`, `at`, `source`），时间在比较时点前5分钟内且基准和合约一致；否则输出待确认。未确认库存、单位、税务口径或运费不参与确定成本排序。
+- 输出：`data/quotes/<roomId>.md`、`data/quotes/quotes.jsonl`（兼容原展示字段并保留结构化条件）、`data/quotes/events.jsonl`（追加事件及证据，当前状态可重放）、`data/quotes/state.json`、`data/feishu|dingtalk|wecom|ilink/bot.log`、`data/*/push_state.json`、`data/ilink/state.json`。模型失败不标记消息已处理，可重新投递重试。
+- 旧六字段记录保留在原报价视图中；分析工具使用新事件库。需要分析历史时，在停止服务接收消息后显式运行 `python3 -m server.quote_agent --backfill`，会调用配置模型。回填与实时处理共用规则，先写暂存目录，全部成功才替换输出；任何模型提取失败都保留旧输出。不在运行中的服务旁并发执行回填。
 
 ## 插件开发
 

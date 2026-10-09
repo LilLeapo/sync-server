@@ -526,7 +526,8 @@ def main():
 
     server.wechat_replier = (
         wechat_reply.WechatReplier(
-            bridge, _downlink, os.path.join(args.data_dir, "reply_switch.json"))
+            bridge, _downlink, os.path.join(args.data_dir, "reply_switch.json"),
+            store=store, quote_log=quote_log)
         if bridge is not None else None)
 
     if args.socket_port > 0:

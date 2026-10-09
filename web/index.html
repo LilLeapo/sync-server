@@ -334,9 +334,25 @@
     display: flex; align-items: center; justify-content: center;
     font: 700 11px var(--sans);
   }
-  .app-card__body { min-width: 0; }
-  .app-card__title { font-size: 13px; font-weight: 600; word-break: break-all; }
+  .app-card--quote { align-items: flex-start; }
+  .app-card__body { min-width: 0; flex: 1; }
+  .app-card__title { font-size: 13px; font-weight: 600; word-break: break-word; white-space: pre-wrap; }
   .app-card__sub { margin-top: 2px; font: 11px var(--mono); color: var(--muted); word-break: break-all; }
+  .app-card__quote {
+    margin-top: 8px;
+    padding: 6px 8px 6px 10px;
+    border-left: 3px solid var(--accent);
+    background: var(--chip);
+    border-radius: 0 6px 6px 0;
+  }
+  .app-card__quote-who { font-size: 11px; color: var(--muted); }
+  .app-card__quote-text {
+    margin-top: 2px;
+    font-size: 12.5px;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
 
   .jump {
     position: absolute;
@@ -1050,9 +1066,69 @@
     );
   }
 
+  const REFER_LABEL = {
+    1: "文本", 3: "图片", 34: "语音", 42: "名片", 43: "视频", 47: "表情", 48: "位置", 49: "应用消息",
+  };
+
   function cdata(content, tag) {
-    const m = content.match(new RegExp("<" + tag + ">(?:<!\\[CDATA\\[)?([\\s\\S]*?)(?:\\]\\]>)?</" + tag + ">"));
+    const m = content.match(new RegExp("<" + tag + "\\b[^>]*>(?:<!\\[CDATA\\[)?([\\s\\S]*?)(?:\\]\\]>)?</" + tag + ">"));
     return m ? m[1].trim() : "";
+  }
+
+  function tagBlock(content, tag) {
+    const m = content.match(new RegExp("<" + tag + "\\b[^>]*>([\\s\\S]*?)</" + tag + ">"));
+    return m ? m[1] : "";
+  }
+
+  function unescapeXml(s) {
+    return String(s || "")
+      .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, "\"")
+      .replace(/&apos;/g, "'")
+      .replace(/&amp;/g, "&");
+  }
+
+  function referPlain(block) {
+    const rtype = Number(cdata(block, "type")) || 0;
+    const raw = unescapeXml(cdata(block, "content")).trim();
+    if (!raw) return REFER_LABEL[rtype] && rtype !== 1 ? "[" + REFER_LABEL[rtype] + "]" : "";
+    const looksXml = /^\s*</.test(raw);
+    if (looksXml && (rtype === 3 || rtype === 34 || rtype === 43 || rtype === 47 || rtype === 42 || rtype === 48)) {
+      return "[" + (REFER_LABEL[rtype] || "消息") + "]";
+    }
+    if (looksXml || rtype === 49) {
+      const title = cdata(raw, "title");
+      const des = cdata(raw, "des");
+      const text = [title, des].filter(Boolean).join("\n");
+      if (text) return text;
+      if (REFER_LABEL[rtype] && rtype !== 1) return "[" + REFER_LABEL[rtype] + "]";
+    }
+    return raw.replace(/^[0-9A-Za-z_.\-]{2,80}:\n/, "");
+  }
+
+  function quoteCardHtml(content) {
+    const title = cdata(content, "title") || cdata(content, "des");
+    const block = tagBlock(content, "refermsg");
+    const who = (block && (cdata(block, "displayname") || cdata(block, "chatusr"))) || "未知";
+    const rtype = block ? (Number(cdata(block, "type")) || 0) : 0;
+    const rlabel = REFER_LABEL[rtype] || (rtype ? "类型 " + rtype : "文本");
+    const quoted = block ? referPlain(block) : "";
+    const quote = block
+      ? '<div class="app-card__quote">' +
+        '<div class="app-card__quote-who">' + escapeHtml(who) + " · " + escapeHtml(rlabel) + "</div>" +
+        (quoted ? '<div class="app-card__quote-text">' + formatText(quoted) + "</div>" : "") +
+        "</div>"
+      : "";
+    return (
+      '<div class="app-card app-card--quote">' +
+      '<div class="app-card__icon">引用</div>' +
+      '<div class="app-card__body">' +
+      '<div class="app-card__title">' + formatText(title || "[引用]") + "</div>" +
+      quote +
+      "</div></div>"
+    );
   }
 
   function appMsgHtml(content) {
@@ -1062,6 +1138,7 @@
     const totalLen = Number(cdata(content, "totallen")) || 0;
     const fileExt = cdata(content, "fileext");
     const label = APPMSG_LABEL[subType] || "应用消息";
+    if (subType === 57) return quoteCardHtml(content);
     let sub = des;
     if (!sub && totalLen) sub = (fileExt ? fileExt.toUpperCase() + " · " : "") + fmtSize(totalLen);
     return appCardHtml(label, title || "[" + label + "]", sub);
