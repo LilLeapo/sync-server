@@ -440,7 +440,28 @@
   .qtable td.mono { font-family: var(--mono); font-size: 11px; white-space: nowrap; }
   .qtable td.qprice { font-weight: 700; color: var(--accent-ink); white-space: nowrap; }
   .qtable td.qsum { max-width: 220px; color: var(--muted); }
+  .qtable .th-hint { display: block; font: 400 10px var(--mono); color: var(--faint); letter-spacing: 0; }
+  .qtable td.qregion { white-space: nowrap; max-width: 130px; }
+  .qtable td.qsup { min-width: 110px; }
+  .qtable td.qcat { min-width: 130px; }
+  .qtable td.qhist { min-width: 170px; font: 11.5px var(--mono); color: var(--muted); line-height: 1.55; }
+  .qsup__short { font-weight: 600; }
+  .qkind { display: inline-block; margin-left: 4px; padding: 0 5px; border-radius: 4px; background: var(--chip); font: 10px var(--mono); color: var(--muted); }
+  .qbadge { display: inline-block; margin-left: 4px; padding: 0 5px; border-radius: 4px; font: 10px var(--mono); color: #fff; background: var(--danger); }
+  .qbadge.soft { background: var(--chip); color: var(--muted); }
+  .qmuted { color: var(--faint); }
+  .qdelta { color: var(--danger); }
+  .qdelta.down { color: var(--accent-ink); }
   .qimg { color: var(--accent-ink); cursor: zoom-in; text-decoration: none; border-bottom: 1px solid var(--accent-soft); }
+  /* 窄屏：五列挤不下时允许换行并收起表头提示，避免横向溢出 */
+  @media (max-width: 700px) {
+    .qtable { font-size: 11.5px; }
+    .qtable th, .qtable td { padding: 6px 7px; }
+    .qtable .th-hint { display: none; }
+    .qtable td.qregion { white-space: normal; max-width: none; }
+    .qtable td.qsup, .qtable td.qcat, .qtable td.qhist, .qtable td.qprice { min-width: 0; white-space: normal; }
+    .qtable td.qhist { line-height: 1.45; }
+  }
 
   /* ---------- 灯箱 ---------- */
   .lightbox {
@@ -1162,11 +1183,17 @@
     if (state.selectedRoom) list = list.filter((r) => r.roomId === state.selectedRoom);
     if (state.search) {
       const q = state.search.toLowerCase();
-      list = list.filter((r) =>
-        ((r["项目"] || "") + (r["备注"] || "") + (r.summary || "") + (r.sender || "") + (r.roomName || ""))
-          .toLowerCase().includes(q));
+      list = list.filter((r) => quoteSearchText(r).toLowerCase().includes(q));
     }
     return list;
+  }
+
+  // 搜索覆盖表头里的每个可见维度，避免「看得见却搜不到」
+  function quoteSearchText(r) {
+    const d = r.details || {};
+    return [r["供应商"], r["项目"], r["备注"], r.summary, r.sender, r.senderId, r.roomName,
+      d.pickup_region, d.destination, d.quality, d.brand, d.contract, d.benchmark, r["价格"]]
+      .filter(Boolean).join(" ");
   }
 
   function renderQuotes() {
@@ -1181,41 +1208,179 @@
     let html = "";
     let lastDate = "";
     let openTable = false;
-    const THEAD = "<thead><tr><th>时间</th><th>发送人</th><th>群聊</th><th>项目</th><th>价格</th><th>单位</th><th>数量</th><th>备注</th><th>来源</th><th>摘要</th></tr></thead>";
+    // 同一份报价日志内的历史行，用于回溯调价链
+    const byId = new Map();
+    for (const r of state.quotes) if (r.quoteId) byId.set(r.quoteId, r);
     for (const r of list) {
       const d = fmtDate(r.time);
       if (d !== lastDate) {
         if (openTable) html += "</tbody></table>";
         lastDate = d;
         html += '<div class="date-sep"><span>' + d + "</span></div>";
-        html += '<table class="qtable">' + THEAD + "<tbody>";
+        html += '<table class="qtable">' + QUOTE_THEAD + "<tbody>";
         openTable = true;
       }
-      html += quoteRowHtml(r);
+      html += quoteRowHtml(r, byId);
     }
     if (openTable) html += "</tbody></table>";
     feed.innerHTML = html;
     if (state.stick) scrollBottom();
   }
 
-  function quoteRowHtml(r) {
+  /* ---------- 报价表头 ----------
+     列顺序即采购判断顺序：地区决定价格，再比供应商与品类，最后看价格来源和调价过程。 */
+  const QUOTE_THEAD =
+    "<thead><tr>" +
+    '<th title="不同售卖地区价格不同">供应商地区<span class="th-hint" aria-hidden="true">自提 / 送到</span></th>' +
+    '<th title="完整公司名在悬停提示里">供应商名称<span class="th-hint" aria-hidden="true">简称</span></th>' +
+    '<th title="铜 / 铝 / 电解铜">品类 · 品质<span class="th-hint" aria-hidden="true">品牌规格</span></th>' +
+    '<th title="固定数字 或 升贴水">价格<span class="th-hint" aria-hidden="true">固定 / 升贴水</span></th>' +
+    '<th title="同一方案的价格变化链，取自调价事件">调价历史记录<span class="th-hint" aria-hidden="true">旧价 → 新价</span></th>' +
+    "</tr></thead>";
+
+  const SUPPLIER_SUFFIX = /(集团股份有限公司|集团有限责任公司|股份有限公司|有限责任公司|集团有限公司|有限公司|集团公司|公司|集团|厂|商行|经营部|贸易部|贸易)$/;
+
+  // 供应商简称：去掉括号备注与公司后缀，保留可辨识主体；去掉后为空则回退原名
+  function supplierShort(name) {
+    const raw = String(name || "").trim();
+    const base = raw.replace(/[（(][^）)]*[）)]/g, "").replace(/[\s\u3000]+/g, "").replace(SUPPLIER_SUFFIX, "");
+    return base || raw;
+  }
+
+  // 报价地区：自提地与送达地分开标注，原文没写就不猜
+  function regionLabel(r) {
+    const d = (r && r.details) || {};
+    const parts = [];
+    if (d.pickup_region) parts.push("自提·" + d.pickup_region);
+    if (d.destination) parts.push("送到·" + d.destination);
+    if (!parts.length && d.delivery === "pickup") parts.push("自提（地区待确认）");
+    return parts.join(" / ");
+  }
+
+  function numOrNull(v) {
+    if (v === null || v === undefined || v === "" || typeof v === "boolean") return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+  function fmtNum(n) {
+    return Number(n).toLocaleString("zh-CN", { maximumFractionDigits: 2 });
+  }
+  function signed(n) {
+    return (n > 0 ? "+" : "") + fmtNum(n);
+  }
+
+  // 价格：固定价取 amount，点价/现货价取「基准+升贴水」；两者都没有才回落到原文价格串
+  function priceLabel(r) {
+    const d = (r && r.details) || {};
+    const unit = String(r["单位"] || d.unit || "").trim();
+    const amount = numOrNull(d.amount);
+    const premium = numOrNull(d.premium);
+    if (d.pricing === "fixed" && amount !== null) {
+      return { text: fmtNum(amount) + (unit ? " " + unit : ""), kind: "固定" };
+    }
+    if ((d.pricing === "futures" || d.pricing === "spot") && premium !== null) {
+      const basis = d.contract || d.benchmark || "基准待确认";
+      return { text: basis + signed(premium) + (unit && unit !== "元/吨" ? " " + unit : ""), kind: "升贴水" };
+    }
+    return { text: String(r["价格"] || "").trim(), kind: "" };
+  }
+
+  // 品类来自项目字段，品质/品牌/规格按原文补充，与品类重复的不重列
+  function categoryLabel(r) {
+    const d = (r && r.details) || {};
+    const head = String(r["项目"] || "").trim();
+    const tags = [];
+    if (d.quality && String(d.quality).trim() !== head) tags.push(String(d.quality));
+    if (d.brand) tags.push("品牌 " + d.brand);
+    if (d.diameter_mm !== null && d.diameter_mm !== undefined) tags.push(d.diameter_mm + "mm");
+    if (d.resistance_max !== null && d.resistance_max !== undefined) {
+      tags.push("电阻上限 " + d.resistance_max + (d.resistance_unit === "quote_code" ? "" : " " + (d.resistance_unit || "单位待确认")));
+    }
+    return { head: head, tags: tags };
+  }
+
+  const QUOTE_STATUS_TEXT = {
+    needs_confirmation: "待确认",
+    unavailable: "无可供货库存",
+    rejected: "已拒价",
+    superseded: "已被替代",
+    historical: "历史记录",
+  };
+  const QUOTE_EVENT_TEXT = { adjustment: "调价", amendment: "更正", rejection: "拒价", stock: "库存", purchase: "采购" };
+
+  // 调价历史：沿 calculation.previousQuoteId 回溯同一方案的价格变化链
+  function adjustChain(r, byId) {
+    const steps = [];
+    let cur = r;
+    for (let i = 0; i < 8 && cur; i++) {
+      const calc = Array.isArray(cur.calculation) && cur.calculation.length ? cur.calculation[0] : null;
+      const prev = calc && calc.previousQuoteId ? byId.get(calc.previousQuoteId) : null;
+      if (!prev) break;
+      steps.unshift({ from: priceLabel(prev).text, to: priceLabel(cur).text, time: cur.time, delta: numOrNull(calc.delta) });
+      cur = prev;
+    }
+    return steps;
+  }
+
+  function historyHtml(r, byId) {
+    const steps = adjustChain(r, byId);
+    if (!steps.length) return '<span class="qmuted">—</span>';
+    const head = steps.length > 3 ? '<div class="qmuted">… 共 ' + steps.length + " 次</div>" : "";
+    return head + steps.slice(-3).map((s) => (
+      "<div>" + escapeHtml(s.from || "…") + " → " + escapeHtml(s.to || "…") +
+      // 对采购方而言涨价是不利方向，跌价才用安全色
+      (s.delta === null ? "" : ' <b class="qdelta' + (s.delta < 0 ? " down" : "") + '">' + signed(s.delta) + "</b>") +
+      ' <span class="qmuted">' + escapeHtml(fmtDate(s.time).slice(5) + " " + fmtTime(s.time)).trim() + "</span></div>"
+    )).join("");
+  }
+
+  // 被挤掉的列不丢弃：时间/发送人/群聊/来源/原文/疑点放在行悬停提示里
+  function quoteTitle(r) {
+    const evidence = String(r.evidence || "").replace(/\s+/g, " ").trim();
+    const bits = [
+      r.time ? "时间 " + fmtDate(r.time) + " " + fmtTime(r.time) : "时间待确认",
+      r.sender ? "发送人 " + r.sender + (r.senderId && r.senderId !== r.sender ? " (" + r.senderId + ")" : "") : "",
+      "群聊 " + (r.roomName || shortRoom(r.roomId)),
+      r.source ? "来源 " + r.source : "",
+      r["备注"] ? "备注 " + r["备注"] : "",
+      evidence ? "原文 " + evidence.slice(0, 140) : "",
+      Array.isArray(r.warnings) && r.warnings.length ? "疑点 " + r.warnings.join("、") : "",
+    ];
+    return bits.filter(Boolean).join("\n");
+  }
+
+  function quoteRowHtml(r, byId) {
+    const d = r.details || {};
+    const region = regionLabel(r);
+    const name = String(r["供应商"] || "").trim();
+    const short = supplierShort(name);
+    const cat = categoryLabel(r);
+    const price = priceLabel(r);
+    const badges = [];
+    if (r.event_type && QUOTE_EVENT_TEXT[r.event_type]) {
+      badges.push('<span class="qbadge soft">' + QUOTE_EVENT_TEXT[r.event_type] + "</span>");
+    }
+    if (r.status && QUOTE_STATUS_TEXT[r.status]) {
+      badges.push('<span class="qbadge' + (r.status === "superseded" || r.status === "historical" ? " soft" : "") + '">' +
+        QUOTE_STATUS_TEXT[r.status] + "</span>");
+    }
     const imgLink = r.imgFile
-      ? '<a class="qimg" data-img="' + escapeHtml(localUrl("/" + r.imgFile)) + '">查看原图</a>'
+      ? '<a class="qimg" data-img="' + escapeHtml(localUrl("/" + r.imgFile)) + '">原图</a>'
       : "";
-    const summary = r.source === "图片" ? imgLink : escapeHtml(r.summary || "");
+    const taxTag = d.tax === "excluded" ? '<span class="qmuted">不含税</span>'
+      : (d.tax === "included" ? '<span class="qmuted">含税</span>' : "");
+    const tails = [imgLink, taxTag].filter(Boolean);
     return (
-      "<tr>" +
-      '<td class="mono">' + fmtTime(r.time) + "</td>" +
-      '<td class="mono"' + (r.senderId && r.senderId !== r.sender ? ' title="' + escapeHtml(r.senderId) + '"' : "") + ">" +
-        escapeHtml(r.sender || "") + "</td>" +
-      '<td>' + escapeHtml(r.roomName || shortRoom(r.roomId)) + "</td>" +
-      "<td>" + escapeHtml(r["项目"] || "") + "</td>" +
-      '<td class="qprice">' + escapeHtml(r["价格"] || "") + "</td>" +
-      "<td>" + escapeHtml(r["单位"] || "") + "</td>" +
-      "<td>" + escapeHtml(r["数量"] || "") + "</td>" +
-      "<td>" + escapeHtml(r["备注"] || "") + "</td>" +
-      "<td>" + escapeHtml(r.source || "") + "</td>" +
-      '<td class="qsum">' + summary + "</td>" +
+      '<tr title="' + escapeHtml(quoteTitle(r)) + '">' +
+      '<td class="qregion">' + (region ? escapeHtml(region) : '<span class="qmuted">—</span>') + "</td>" +
+      '<td class="qsup"' + (name && name !== short ? ' title="' + escapeHtml(name) + '"' : "") + ">" +
+        '<span class="qsup__short">' + escapeHtml(short || "—") + "</span></td>" +
+      '<td class="qcat">' + escapeHtml(cat.head || "—") +
+        (cat.tags.length ? ' <span class="qmuted">' + escapeHtml(cat.tags.join(" · ")) + "</span>" : "") + "</td>" +
+      '<td class="qprice">' + escapeHtml(price.text || "—") +
+        (price.kind ? '<span class="qkind">' + price.kind + "</span>" : "") + badges.join("") +
+        (tails.length ? " " + tails.join(" ") : "") + "</td>" +
+      '<td class="qhist">' + historyHtml(r, byId || new Map()) + "</td>" +
       "</tr>"
     );
   }

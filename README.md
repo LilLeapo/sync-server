@@ -15,7 +15,7 @@ WABTest 手机模块 ──TCP/HTTP──▶ sync-server ──报价 Agent(pi-a
 
 - **TCP 长连接接收**（NDJSON 协议，默认 8081）：hello 握手（可选 token 鉴权）、逐条 ack、30s 心跳、60s 重复投递去重
 - **HTTP 兜底上报**（`POST /`，与 socket 同一消息格式）
-- **网页前端**（默认 8080）：实时消息流、房间分组/未读、搜索高亮、图片灯箱、导出/清空、「报价」视图
+- **网页前端**（默认 8080）：实时消息流、房间分组/未读、搜索高亮、图片灯箱、导出/清空、「报价」视图（按 `供应商地区 / 供应商名称（简称） / 品类·品质 / 价格 / 调价历史记录` 五列展示；行悬停可见时间、发送人、群聊、来源、备注、原文证据与疑点）
 - **报价 Agent**：文本消息优先走 **pi-agent SDK 桥**（`pi_agent` 的 Agent 运行时），图片走 OpenAI 兼容视觉模型；按群分文件写 Markdown（`data/quotes/<roomId>.md`）+ 结构化 `quotes.jsonl`
 - **飞书机器人**：
   - 报价推送：Agent 提取到报价 → LLM 格式化成群消息 → 推送到微信群机器人（webhook 加签）或应用消息
@@ -184,7 +184,7 @@ systemctl restart wabtest-sync
 - `compare_quotes` 按目的地或自提地、品质、交期、税票及数量要求返回组内排序、待确认和不符合要求的方案。不同产品、品牌、品质、交期、付款及税票条件分组，不作全局最低价排名。默认比较时点为现在、报价最大年龄24小时；历史分析指定 `as_of`（ISO时间）重放该时点的原始报价状态，`max_age_hours` 最大720小时。明确“发货”期限不能当“到货”期限，车数不自动转换吨数。库存或主体补充不刷新原报价的价格时间。
 - 本服务没有联网基准行情源。期货/现货均价换算需要调用方提供有出处的 `benchmark`（`name`, `contract`, `price`, `at`, `source`），时间在比较时点前5分钟内且基准和合约一致；否则输出待确认。未确认库存、单位、税务口径或运费不参与确定成本排序。
 - 输出：`data/quotes/<roomId>.md`、`data/quotes/quotes.jsonl`（兼容原展示字段并保留结构化条件）、`data/quotes/events.jsonl`（追加事件及证据，当前状态可重放）、`data/quotes/state.json`、`data/feishu|dingtalk|wecom|ilink/bot.log`、`data/*/push_state.json`、`data/ilink/state.json`。模型失败不标记消息已处理，可重新投递重试。
-- 旧六字段记录保留在原报价视图中；分析工具使用新事件库。需要分析历史时，在停止服务接收消息后显式运行 `python3 -m server.quote_agent --backfill`，会调用配置模型。回填与实时处理共用规则，先写暂存目录，全部成功才替换输出；任何模型提取失败都保留旧输出。不在运行中的服务旁并发执行回填。
+- 旧六字段记录保留在原报价视图中；分析工具使用新事件库。「报价」视图的供应商地区取 `details.pickup_region / destination`，价格按 `details.pricing` 显示为固定数字（`amount`）或升贴水（`基准+premium`），调价历史由 `calculation.previousQuoteId` 回溯成链；没有对应字段的列显示为 `—`，不推断补全。需要分析历史时，在停止服务接收消息后显式运行 `python3 -m server.quote_agent --backfill`，会调用配置模型。回填与实时处理共用规则，先写暂存目录，全部成功才替换输出；任何模型提取失败都保留旧输出。不在运行中的服务旁并发执行回填。
 
 ## 插件开发
 
