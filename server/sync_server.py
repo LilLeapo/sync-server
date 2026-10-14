@@ -270,8 +270,9 @@ class Handler(BaseHTTPRequestHandler):
         count = self.server.store.clear(params.get("room") or None, device)
         agent = getattr(self.server, "agent", None)
         if agent is not None:
-            # 消息清空后 seq 重新计数，重置去重状态防止新消息被误判已处理
-            agent.reset_state()
+            # 消息清空后 seq 重新计数，重置去重状态防止新消息被误判已处理；
+            # 按设备清空时只重置该设备的 Agent 上下文
+            agent.reset_state(device)
         self._json(200, {"ok": True, "count": count})
 
     def _handle_feishu_status(self):

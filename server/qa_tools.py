@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """问答工具集 —— 各机器人（飞书 / 企业微信）共用的 Agent 工具定义。
 
-`build_qa_tools(store, quote_log)` 返回一组可直接注册给 pi_bridge 会话的工具：
-handler 均为同步函数，入参 dict，返回 str。
+`build_qa_tools(store, quote_log, device=None)` 返回一组可直接注册给 pi_bridge 会话的工具：
+handler 均为同步函数，入参 dict，返回 str。device 非 None 时所有工具只看该设备的数据
+（微信群 @ 回复按设备各开一个 Agent）；飞书/钉钉等机器人不传，看全部设备。
 """
 from __future__ import annotations
 
@@ -44,7 +45,7 @@ def _clamp(value, default: int, lo: int, hi: int) -> int:
         return default
 
 
-def build_qa_tools(store, quote_log) -> list[dict]:
+def build_qa_tools(store, quote_log, device: str | None = None) -> list[dict]:
     """Expose historical records, replayed state, comparison, and evidence."""
 
     path = getattr(quote_log, "path", None)
@@ -55,7 +56,7 @@ def build_qa_tools(store, quote_log) -> list[dict]:
         if not quote_log:
             return rows
         while True:
-            page, _ = quote_log.list(after, 2000, room)
+            page, _ = quote_log.list(after, 2000, room, device)
             if not page:
                 break
             rows.extend(page)
@@ -79,7 +80,7 @@ def build_qa_tools(store, quote_log) -> list[dict]:
         return rows_text(rows[-limit:]) or "还没有报价记录。"
 
     def current_quotes(params: dict) -> str:
-        rows = ledger.current(params.get("room"))
+        rows = ledger.current(params.get("room"), device)
         if params.get("supplier"):
             rows = [row for row in rows if row["供应商"] == params["supplier"]]
         if params.get("product"):
@@ -93,9 +94,9 @@ def build_qa_tools(store, quote_log) -> list[dict]:
             at = timestamp(params["as_of"])
             if not at:
                 return json.dumps({"error": "as_of日期无效"}, ensure_ascii=False)
-            rows = ledger.at(at, params.get("room"))
+            rows = ledger.at(at, params.get("room"), device)
         else:
-            rows = ledger.current(params.get("room"))
+            rows = ledger.current(params.get("room"), device)
         if not rows:
             return json.dumps({"groups": [], "needs_confirmation": [],
                                "note": "没有结构化报价事件；旧报价需通过历史回填重新提取，不能只按价格字符串排名。"}, ensure_ascii=False)
@@ -103,22 +104,22 @@ def build_qa_tools(store, quote_log) -> list[dict]:
 
     def quote_history(params: dict) -> str:
         events = ledger.history(str(params.get("supplier") or ""), str(params.get("product") or ""),
-                                params.get("room"), _clamp(params.get("limit"), 20, 1, 50))
+                                params.get("room"), _clamp(params.get("limit"), 20, 1, 50), device)
         return json.dumps({"events": events}, ensure_ascii=False)
 
     def quote_evidence(params: dict) -> str:
         ledger.refresh()
         with ledger.lock:
             row = ledger.quotes.get(params.get("quote_id"))
-            if row:
+            if row and (device is None or row["deviceId"] == device):
                 return json.dumps(row, ensure_ascii=False)
         return "没有找到该quoteId的证据。"
 
     def room_stats(params: dict) -> str:
         if not store:
             return "存储不可用。"
-        stats = store.stats()
-        rooms = store.rooms()[:8]
+        stats = store.stats(device)
+        rooms = store.rooms(device)[:8]
         lines = [f"累计消息 {stats.get('count', 0)} 条，图片 {stats.get('images', 0)} 张。"]
         if rooms:
             lines.append("活跃群：" + "、".join(room_name(r) for r in rooms))

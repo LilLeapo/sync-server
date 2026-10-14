@@ -220,13 +220,16 @@ def normalize_event(item: dict, source: dict, index: int) -> dict:
              "evidence": evidence, "certainty": certainty, "target_id": item.get("target_id"),
              "changes": changes, "context_source_ids": item.get("context_source_ids") or [],
              "source": source, "effectiveTime": effective_time, "warnings": sorted(set(warnings))}
+    # 每台设备各记一份事件；无设备的旧事件 id 不变，已落盘的 events.jsonl 仍幂等
+    device = source.get("deviceId") or ""
     event["eventId"] = digest([source.get("roomId"), identity, index, event["event_type"],
-                                legacy, details, evidence, changes, event["target_id"]])
+                                legacy, details, evidence, changes, event["target_id"],
+                                *([device] if device else [])])
     return event
 
 
 def condition_key(row: dict):
-    return (row.get("roomId"), row.get("供应商"), row.get("项目"),
+    return (row.get("deviceId") or "", row.get("roomId"), row.get("供应商"), row.get("项目"),
             *(row.get("details", {}).get(key) for key in DIMENSIONS))
 
 
@@ -290,7 +293,8 @@ class QuoteLedger:
                 "stockGroupId": event["eventId"],
                 "details": copy.deepcopy(event["details"]), "evidence": event["evidence"],
                 "warnings": list(event["warnings"]), "status": "needs_confirmation" if event["warnings"] else "active",
-                "roomId": source.get("roomId"), "sender": source.get("sender"),
+                "roomId": source.get("roomId"), "deviceId": source.get("deviceId") or "",
+                "sender": source.get("sender"),
                 "senderId": source.get("senderId"), "time": event["effectiveTime"],
                 "receivedAt": source.get("receivedAt"), "source": source.get("source"),
                 "msgSeq": source.get("msgSeq"), "imgFile": source.get("imgFile"),
@@ -328,6 +332,8 @@ class QuoteLedger:
             if event["event_type"] == "amendment" and event.get("target_id"):
                 allowed_states.add("needs_confirmation")
             if row["status"] not in allowed_states or row["roomId"] != event["source"].get("roomId"):
+                continue
+            if row["deviceId"] != (event["source"].get("deviceId") or ""):
                 continue
             if event.get("target_id") and row["quoteId"] != event["target_id"]:
                 continue
@@ -493,13 +499,15 @@ class QuoteLedger:
                 outcome["targetIds"].append(sibling["quoteId"])
         outcome.update(status="applied", rows=rows)
 
-    def current(self, room: str | None = None) -> list[dict]:
+    def current(self, room: str | None = None, device: str | None = None) -> list[dict]:
+        """device: None 不筛选；"" 只看无设备标识的旧数据（与 Store 的约定一致）。"""
         with self.lock:
             self.refresh()
             return copy.deepcopy([row for row in self.quotes.values()
-                                  if row["status"] in ("active", "needs_confirmation", "unavailable") and (not room or row["roomId"] == room)])
+                                  if row["status"] in ("active", "needs_confirmation", "unavailable") and (not room or row["roomId"] == room)
+                                  and (device is None or row["deviceId"] == device)])
 
-    def at(self, as_of: int, room: str | None = None) -> list[dict]:
+    def at(self, as_of: int, room: str | None = None, device: str | None = None) -> list[dict]:
         """Reconstruct original-time state instead of filtering today's projection."""
         with self.lock:
             self.refresh()
@@ -509,16 +517,18 @@ class QuoteLedger:
             at = event.get("effectiveTime") or event["source"].get("receivedAt")
             if at and at <= as_of:
                 snapshot._apply(event)
-        return snapshot.current(room)
+        return snapshot.current(room, device)
 
-    def history(self, supplier: str = "", product: str = "", room: str | None = None, limit: int = 30) -> list[dict]:
+    def history(self, supplier: str = "", product: str = "", room: str | None = None, limit: int = 30,
+                device: str | None = None) -> list[dict]:
         with self.lock:
             self.refresh()
             return [{**copy.deepcopy(event), "outcome": copy.deepcopy(self.outcomes[event["eventId"]])}
                     for event in reversed(self.events)
                     if (not supplier or supplier == event["供应商"])
                     and (not product or product in event["项目"])
-                    and (not room or room == event["source"].get("roomId"))][:limit]
+                    and (not room or room == event["source"].get("roomId"))
+                    and (device is None or device == (event["source"].get("deviceId") or ""))][:limit]
 
 
 def compare_quotes(rows: list[dict], requirements: dict) -> dict:

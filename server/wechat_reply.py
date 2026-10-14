@@ -7,7 +7,11 @@
   - type == 1（文本）
   - content 非空
 
-私聊、没被 @ 的群消息、图片消息都不回复。同一 msgSvrId 只回复一次。
+私聊、没被 @ 的群消息、图片消息都不回复。
+
+多设备时每台设备（每个微信号）各是一个独立 Agent：会话记忆按「设备 + 群」分开，
+问答工具只查本设备的数据，去重按「设备 + msgSvrId」——同一台设备重复投递只回一次，
+两台设备都被 @（如 @所有人）则各自回复。
 """
 from __future__ import annotations
 
@@ -44,8 +48,9 @@ class WechatReplier:
         self._seen_lock = threading.Lock()
         self._sessions: dict = {}
         self._sessions_lock = threading.Lock()
-        self._q: "queue.Queue[dict]" = queue.Queue()
-        threading.Thread(target=self._loop, daemon=True, name="wechat-reply").start()
+        # 每台设备一条队列 + 一个工作线程：某台设备的慢回复不会堵住其他设备
+        self._queues: "dict[str, queue.Queue[dict]]" = {}
+        self._queues_lock = threading.Lock()
 
     @property
     def enabled(self) -> bool:
@@ -84,8 +89,17 @@ class WechatReplier:
             print(f"[wechat_reply] 保存开关失败: {e}", file=sys.stderr)
 
     def enqueue(self, msg: dict):
-        if isinstance(msg, dict):
-            self._q.put(msg)
+        # 先筛掉不该回的消息，只为真正被 @ 过的设备起工作线程
+        if not isinstance(msg, dict) or not self._eligible(msg):
+            return
+        device_id = str(msg.get("deviceId") or "")
+        with self._queues_lock:
+            q = self._queues.get(device_id)
+            if q is None:
+                q = self._queues[device_id] = queue.Queue()
+                threading.Thread(target=self._loop, args=(q,), daemon=True,
+                                 name=f"wechat-reply-{device_id or '-'}").start()
+        q.put(msg)
 
     def handle(self, msg: dict) -> str | None:
         """同步处理。开关关闭、不该回、或模型没给出文本时返回 None。"""
@@ -123,11 +137,12 @@ class WechatReplier:
         return bool(str(msg.get("content") or "").strip())
 
     def _mark(self, msg: dict) -> bool:
+        device_id = str(msg.get("deviceId") or "")
         svr = msg.get("msgSvrId")
         if svr in (None, "", 0, "0"):
-            key = (msg.get("roomId"), msg.get("createTime"), msg.get("content"))
+            key = (device_id, msg.get("roomId"), msg.get("createTime"), msg.get("content"))
         else:
-            key = str(svr)
+            key = (device_id, str(svr))
         with self._seen_lock:
             if key in self._seen:
                 return False
@@ -138,11 +153,12 @@ class WechatReplier:
 
     def _answer(self, msg: dict) -> str | None:
         room = str(msg.get("roomId") or "")
+        device_id = str(msg.get("deviceId") or "")
         sender = str(msg.get("senderName") or msg.get("sender") or "").strip()
         content = str(msg.get("content") or "").strip()
         prompt = f"群成员 {sender} 说：{content}" if sender else content
         try:
-            out = self._session(room).ask(prompt)
+            out = self._session(room, device_id).ask(prompt)
         except Exception as e:
             print(f"[wechat_reply] agent failed room={room}: {e}", file=sys.stderr)
             return None
@@ -151,20 +167,22 @@ class WechatReplier:
             return None
         return text[:MAX_REPLY_CHARS]
 
-    def _session(self, room: str):
+    def _session(self, room: str, device_id: str = ""):
         with self._sessions_lock:
-            sess = self._sessions.get(room)
+            sess = self._sessions.get((device_id, room))
             if sess is None:
                 from .qa_tools import build_qa_tools
-                tools = build_qa_tools(self.store, self.quote_log) if self.quote_log is not None else []
+                tools = (build_qa_tools(self.store, self.quote_log, device=device_id)
+                         if self.quote_log is not None else [])
                 system = WECHAT_REPLY_SYSTEM + f"\n当前微信群roomId：{room}。未指定其他群时查询使用这个room。"
-                sess = self.bridge.begin_session(f"wechat-{room}", system, tools)
-                self._sessions[room] = sess
+                session_id = f"wechat-{device_id}-{room}" if device_id else f"wechat-{room}"
+                sess = self.bridge.begin_session(session_id, system, tools)
+                self._sessions[(device_id, room)] = sess
             return sess
 
-    def _loop(self):
+    def _loop(self, q: "queue.Queue[dict]"):
         while True:
-            msg = self._q.get()
+            msg = q.get()
             try:
                 self.handle(msg)
             except Exception as e:

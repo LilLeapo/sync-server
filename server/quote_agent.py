@@ -36,6 +36,7 @@ from server.wechat_quote import is_quote_message, quote_analysis_text
 from server.quote_messages import analysis_units, is_merged
 from server.quote_rules import EXTRACTION_CONTRACT, QuoteLedger, digest, display_conditions
 from server.quote_skill import quote_guidance
+from server.store import device_id_of, safe_name
 
 IMAGE_WAIT_S = 10          # 图片延迟处理，等同消息的原图到达
 LLM_TIMEOUT_S = 60
@@ -172,9 +173,17 @@ class QuoteAgent:
 
     @staticmethod
     def _context_scope(source: dict):
+        """上下文按「设备 + 群」隔离：多设备时每台设备一个独立的提取 Agent。"""
         part = source.get("part", "")
         boundary = (source.get("msgSvrId") or source.get("msgSeq")) if part.startswith("forward:") else "live"
-        return source.get("roomId"), boundary
+        return source.get("deviceId") or "", source.get("roomId"), boundary
+
+    @staticmethod
+    def _svr_key(msg: dict) -> str:
+        """图片按 msgSvrId 合并/跳过时的 key；带设备前缀，无设备时保持旧 key（兼容 state.json）。"""
+        svr = str(msg.get("msgSvrId") or "")
+        device = device_id_of(msg)
+        return f"{device}/{svr}" if device and svr else svr
 
     # ---------- 状态持久化 ----------
 
@@ -203,11 +212,21 @@ class QuoteAgent:
         except OSError:
             return 0
 
-    def reset_state(self):
-        """消息库被清空（seq 重新计数）时重置去重状态，避免新消息被误判已处理。"""
+    def reset_state(self, device: str | None = None):
+        """消息库被清空（seq 重新计数）时重置去重状态，避免新消息被误判已处理。
+
+        device 非 None 时只清该设备的上下文与图片状态，其他设备的 Agent 不受影响；
+        seq 是全局计数、清空后会复用，所以已处理 seq 总是整体清掉。
+        """
         self._processed.clear()
-        self._svr_state.clear()
-        self._context.clear()
+        if device is None:
+            self._svr_state.clear()
+            self._context.clear()
+        else:
+            for key in [k for k in self._svr_state if (k.rsplit("/", 1)[0] if "/" in k else "") == device]:
+                del self._svr_state[key]
+            for scope in [k for k in self._context if k[0] == device]:
+                del self._context[scope]
         self._save_state()
 
     def _load_state(self):
@@ -253,12 +272,12 @@ class QuoteAgent:
         elif mtype == 3:
             if not rec.get("imgFile"):
                 return
-            svr = str(msg.get("msgSvrId") or "")
+            svr = self._svr_key(msg)
             with self._cv:
-                # 队列里已有同 svr 的图片：保留较大的版本，维持原等待时间
+                # 队列里已有同设备同 svr 的图片：保留较大的版本，维持原等待时间
                 for i, (nb, _, old) in enumerate(self._heap):
                     old_msg = old.get("msg") or {}
-                    if old_msg.get("type") == 3 and str(old_msg.get("msgSvrId") or "") == svr:
+                    if old_msg.get("type") == 3 and self._svr_key(old_msg) == svr:
                         if (rec.get("imgSize") or 0) > (old.get("imgSize") or 0):
                             self._heap[i] = (nb, next(self._counter), rec)
                             heapq.heapify(self._heap)
@@ -292,7 +311,7 @@ class QuoteAgent:
 
     def _process(self, rec: dict):
         msg = rec.get("msg") or {}
-        svr = str(msg.get("msgSvrId") or "")
+        svr = self._svr_key(msg)
         size = rec.get("imgSize") or 0
         if msg.get("type") == 3 and svr:
             # 该 svr 已按文字处理过：只有更大的图片版本才重新分析
@@ -342,7 +361,9 @@ class QuoteAgent:
 
     def _analyze(self, rec: dict):
         for source in analysis_units(rec):
-            source["sourceId"] = digest([source.get("roomId"), source.get("msgSvrId") or source.get("msgSeq"), source.get("part")])
+            device = source.get("deviceId") or ""
+            source["sourceId"] = digest([source.get("roomId"), source.get("msgSvrId") or source.get("msgSeq"),
+                                         source.get("part"), *([device] if device else [])])
             if source.get("source") != "图片" and not source.get("content", "").strip():
                 continue
             payload = self._analyze_unit(rec, source)
@@ -354,7 +375,7 @@ class QuoteAgent:
         context = [item for item in self._context[self._context_scope(source)]
                    if item.get("time") and source.get("time") and item.get("sourceId") != source["sourceId"]
                    and 0 <= source["time"] - item["time"] <= 15 * 60 * 1000]
-        known = self.ledger.current(source["roomId"])
+        known = self.ledger.current(source["roomId"], source.get("deviceId") or "")
         known = [row for row in known if row.get("time") and source.get("time") and row["time"] <= source["time"]]
         payload = {"待提取消息": source, "相邻消息": context,
                    "已有报价": [{k: row.get(k) for k in ("quoteId", "供应商", "项目", "价格", "details", "time")}
@@ -473,7 +494,8 @@ class QuoteAgent:
                 ]) + " |"
             ))
 
-        path = os.path.join(self.quotes_dir, f"{room}.md")
+        device = safe_name(device_id_of(msg))
+        path = os.path.join(self.quotes_dir, f"{device}_{room}.md" if device else f"{room}.md")
         existing = ""
         if os.path.exists(path):
             with open(path, "r", encoding="utf-8") as f:
@@ -590,7 +612,7 @@ def backfill(config_path: str, data_dir: str):
             if msg.get("type") == 1 or is_quote_message(msg) or is_merged(msg):
                 records.append(rec)
             elif msg.get("type") == 3 and rec.get("imgFile"):
-                svr = str(msg.get("msgSvrId") or "")
+                svr = QuoteAgent._svr_key(msg)
                 cur = best_img.get(svr)
                 if cur is None or (rec.get("imgSize") or 0) > (cur.get("imgSize") or 0):
                     if cur is None:

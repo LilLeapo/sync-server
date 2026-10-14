@@ -39,6 +39,7 @@ def analysis_units(rec: dict) -> list[dict]:
     base = {"roomId": msg.get("roomId") or "unknown", "receivedAt": received,
             "parentTime": msg.get("createTime"), "msgSeq": rec.get("seq"),
             "msgSvrId": str(msg.get("msgSvrId") or ""),
+            "deviceId": str(msg.get("deviceId") or "").strip(),
             "sender": msg.get("senderName") or msg.get("sender") or "",
             "senderId": msg.get("sender") or "", "partial": False,
             "time": msg.get("createTime") or received, "imgFile": rec.get("imgFile")}

@@ -1499,6 +1499,8 @@
       r.time ? "时间 " + fmtDate(r.time) + " " + fmtTime(r.time) : "时间待确认",
       r.sender ? "发送人 " + r.sender + (r.senderId && r.senderId !== r.sender ? " (" + r.senderId + ")" : "") : "",
       "群聊 " + (r.roomName || shortRoom(r.roomId)),
+      // 每台设备各自提取一份；看全部设备时同一条报价可能出现两次，标出来源设备
+      state.selectedDevice === null ? "设备 " + deviceLabel(r.deviceId == null ? "" : String(r.deviceId)) : "",
       r.source ? "来源 " + r.source : "",
       r["备注"] ? "备注 " + r["备注"] : "",
       evidence ? "原文 " + evidence.slice(0, 140) : "",
