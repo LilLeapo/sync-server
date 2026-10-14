@@ -172,7 +172,7 @@ systemctl restart wabtest-sync
 
 设备名会记到 `data/devices.json`，重启后仍能显示；留空时模块按「厂商 + 机型」自动派生。
 
-`atMe` 为真表示这条群消息 @ 了模块所在微信号（含 @所有人）。配置了 Agent（`agent.config.json`）后，服务端只对「群聊 + `atMe` + 文本」调用 Agent 生成回复，经下行队列发回该群；私聊和没被 @ 的群消息不会自动回复。网页顶栏「回复开 / 回复关」可随时关掉，状态写在 `data/reply_switch.json`，重启后仍有效。
+`atMe` 为真表示这条群消息 @ 了模块所在微信号（含 @所有人）。配置了 Agent（`agent.config.json`）后，服务端只对「群聊 + `atMe` + 文本」调用 Agent 生成回复，经下行队列发回该群；私聊和没被 @ 的群消息不会自动回复。网页顶栏「回复开 / 回复关」是总开关，状态写在 `data/reply_switch.json`，重启后仍有效；单台设备的回复开关、提示词与工具见「多设备分开收取」。
 
 `roomName` / `senderName` 是模块解析出的显示名（模块设置页「附带群名称/发送者名称」控制，模块版本 ≥ 1.1.0.r70），解析不出时为 `null`。服务端所有展示位置（网页消息行/房间列表/报价表、报价 md 标题与表格、`/rooms` `/quotes` 插件、飞书/钉钉推送与问答上下文）都优先用显示名，缺失时回退到 ID —— 因此**升级前的历史数据依然可用**，不会出现空白。
 
@@ -195,7 +195,7 @@ systemctl restart wabtest-sync
 - 微信群被@问答、飞书、钉钉、企业微信和iLink共享 `server/qa_tools.py`，提供 `search_quotes` / `latest_quotes` / `room_stats` / `current_quotes` / `compare_quotes` / `quote_history` / `quote_evidence`；pi SDK和HTTP后端均可执行工具调用，HTTP每轮最多6次工具调用回合。
 - `compare_quotes` 按目的地或自提地、品质、交期、税票及数量要求返回组内排序、待确认和不符合要求的方案。不同产品、品牌、品质、交期、付款及税票条件分组，不作全局最低价排名。默认比较时点为现在、报价最大年龄24小时；历史分析指定 `as_of`（ISO时间）重放该时点的原始报价状态，`max_age_hours` 最大720小时。明确“发货”期限不能当“到货”期限，车数不自动转换吨数。库存或主体补充不刷新原报价的价格时间。
 - 本服务没有联网基准行情源。期货/现货均价换算需要调用方提供有出处的 `benchmark`（`name`, `contract`, `price`, `at`, `source`），时间在比较时点前5分钟内且基准和合约一致；否则输出待确认。未确认库存、单位、税务口径或运费不参与确定成本排序。
-- 输出：`data/quotes/<roomId>.md`、`data/quotes/quotes.jsonl`（兼容原展示字段并保留结构化条件）、`data/quotes/events.jsonl`（追加事件及证据，当前状态可重放）、`data/quotes/state.json`、`data/feishu|dingtalk|wecom|ilink/bot.log`、`data/*/push_state.json`、`data/ilink/state.json`、`data/devices.json`（设备名登记）。模型失败不标记消息已处理，可重新投递重试。
+- 输出：`data/quotes/<roomId>.md`（有设备标识时为 `<deviceId>_<roomId>.md`）、`data/quotes/quotes.jsonl`（兼容原展示字段并保留结构化条件）、`data/quotes/events.jsonl`（追加事件及证据，当前状态可重放）、`data/quotes/state.json`、`data/feishu|dingtalk|wecom|ilink/bot.log`、`data/*/push_state.json`、`data/ilink/state.json`、`data/devices.json`（设备名登记）、`data/device_settings.json`（每台设备的 Agent 设置）、`data/replies.json`（回复记录）。模型失败不标记消息已处理，可重新投递重试。
 - 旧六字段记录保留在原报价视图中；分析工具使用新事件库。「报价」视图的供应商地区取 `details.pickup_region / destination`，价格按 `details.pricing` 显示为固定数字（`amount`）或升贴水（`基准+premium`），调价历史由 `calculation.previousQuoteId` 回溯成链；没有对应字段的列显示为 `—`，不推断补全。需要分析历史时，在停止服务接收消息后显式运行 `python3 -m server.quote_agent --backfill`，会调用配置模型。回填与实时处理共用规则，先写暂存目录，全部成功才替换输出；任何模型提取失败都保留旧输出。不在运行中的服务旁并发执行回填。
 
 ## 插件开发
@@ -252,14 +252,17 @@ def register(api):
 | GET | `/api/ilink/login` | iLink 扫码登录状态（状态/二维码内容/错误/账号） |
 | POST | `/api/ilink/login` | 发起 iLink 扫码登录（无请求体） |
 | GET | `/api/ilink/qr` | 当前登录二维码（`image/svg+xml`，供网页 `<img>` 展示） |
-| GET | `/api/devices` | 设备列表（`deviceId` / `deviceName` / 消息数 / 群数 / `online` / 来源地址） |
+| GET | `/api/devices` | 设备列表（`deviceId` / `deviceName` / 消息数 / 群数 / `online` / 来源地址 / `pending` 待发条数 / `pendingOldestAt` / `dropped` / `reply` / `quotes`），顶层 `pendingGlobal` 为未定向的待发指令 |
+| GET | `/api/device-settings` | 每台设备的 Agent 设置（`devices` 只含改过的设备，其余用 `defaults`）、可选工具 `tools`、固定的基础提示词 `basePrompt` |
+| POST | `/api/device-settings` | 修改一台设备：`{"deviceId":"...","reply":true,"quotes":false,"prompt":"...","tools":["room_stats"]}`，字段可只传一部分；`tools: null` 表示全部工具 |
+| GET | `/api/replies?after=<rev>&device=&limit=200` | 回复记录，按 `rev` 增量（新记录与状态变化都会返回） |
 | GET | `/api/rooms` | 群聊列表（`?device=` 限定设备） |
 | GET | `/api/messages?after=0&limit=1000&room=&q=&device=` | 消息列表（响应不含 imageBase64） |
 | GET | `/api/quotes?after=0&limit=500&room=&device=` | 报价条目（按 qseq 增量） |
 | POST | `/api/clear?room=&device=` | 清空消息 |
 | GET | `/images/<file>` | 图片文件 |
 | POST | `/` | 模块 HTTP 兜底上报 |
-| POST | `/api/send` | 下发发送指令，body 可带 `device` 定向到某台设备 |
+| POST | `/api/send` | 下发发送指令，body 可带 `device` 定向到某台设备；响应带 `sendId` |
 
 启用 token 后，除 `/ping`、`/feishu/event` 与静态页面外均需 `Authorization: Bearer <token>` 或 `?token=` 查询参数；`?device=` 为空串表示只看「未标识」的历史消息，不带该参数则不筛选。
 
@@ -275,7 +278,15 @@ def register(api):
   - 按设备清空（`/api/clear?device=`）只重置该设备的提取上下文，不影响其他设备。
   - 飞书/钉钉/企业微信/iLink 机器人的问答仍看全部设备；报价推送由各设备的提取结果分别触发。
   - 无 `deviceId` 的旧数据归入「未标识」一组，事件 id、Markdown 文件名、会话 id 与升级前一致。
-- 网页侧边栏顶部是设备列表（在线点、消息数）；选中某台设备后，消息流、群列表计数、报价表、清空都只看该设备；「全部设备」时每条消息标出来源设备。
+- **每台设备的 Agent 设置**（设备的 Agent 不一定做报价）：网页选中设备后点「设备设置」，可单独设置
+  - 自动回复开关：关掉后这台设备被 @ 不回复；顶栏「回复开 / 回复关」是总开关，关掉时所有设备都不回复。
+  - 报价提取开关：关掉后不再从这台设备的消息里提取报价（已有报价保留；`--backfill` 重建时也会跳过它）。
+  - Agent 提示词：这台设备的 Agent 负责什么、用什么口吻，接在固定的基础规则（简体中文、一两段、不用 Markdown 等）后面；留空就是通用群助手。
+  - 可用工具：从查报价、群聊统计、比较报价等工具里勾选；全选时存为「全部」，以后新增的工具也自动可用。工具只查这台设备的数据。
+  - 没设置过的设备默认全部开启（与升级前行为一致）；设置存在 `data/device_settings.json`，改提示词或工具后该设备的会话会重开。
+- **回复记录**：顶栏「回复记录」列出每次被 @ 的处理结果——问了什么、回了什么，以及状态：生成中 / 待手机取走 / 已下发到手机 / 未回复（开关关闭）/ 失败（附原因）/ 已丢弃（设备离线太久，待发队列溢出）/ 未确认（服务重启时还没取走）。保留最近 500 条，存在 `data/replies.json`。「已下发到手机」表示指令已被手机取走，实际发送由手机端模块完成。
+- **待发队列**：手机离线时下行指令在服务端排队（每台设备最多 200 条，超出丢最旧的）。设备标签上显示「待发 N」，设备设置里能看到最早入队时间与已丢弃条数；队列只在内存里，服务重启会清空。
+- 网页侧边栏顶部是设备列表（在线点、消息数，关了回复/报价的设备标「不回复 / 不提取」）；选中某台设备后，消息流、群列表计数、报价表、回复记录、清空都只看该设备；「全部设备」时每条消息标出来源设备。
 - 发送框在选中设备后会把指令定向到该设备（`/api/send` 的 `device` 字段 + ack 里的 `send.deviceId`，模块端会二次校验）；不选设备则维持原行为（谁先取谁发）。
 - 升级前的历史消息没有 `deviceId`，归入「未标识」一组，不影响原有展示与统计。
 
@@ -304,10 +315,12 @@ server/
   dingtalk.py      钉钉机器人（自定义机器人推送 + Stream 长连接问答）
   wecom.py         企业微信智能机器人（纯标准库 WebSocket 长连接 + 问答 + 主动推送）
   ilink.py         微信 iLink 私聊通道（多账号：一进程多轮询 + 扫码登录 + Agent 问答 + 报价推送）
-  qa_tools.py      机器人共用的 Agent 工具集（查报价/最近报价/群统计）
+  qa_tools.py      机器人共用的 Agent 工具集（查报价/最近报价/群统计），可按设备限定数据
+  device_settings.py 每台设备的 Agent 设置（回复/报价开关、提示词、工具）
+  wechat_reply.py  群聊被 @ 时的 Agent 回复（按设备分会话）+ 回复记录
   bot_plugins.py   插件框架（PluginHost / PluginApi）
 plugins/           内置插件：help、quotes、rooms、stats、echo（开发模板）
-web/index.html     前端（消息流 + 报价视图）
+web/index.html     前端（消息流 + 报价视图 + 回复记录 + 设备设置）
 tests/             离线测试套件
 data/              运行数据（gitignore）
 feishu.config.json      飞书配置（gitignore，样例见 .example）

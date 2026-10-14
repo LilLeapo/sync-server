@@ -20,6 +20,8 @@ from urllib.parse import parse_qs
 try:
     from .relay import RelayListener
     from .store import Store, QuoteLog, device_id_of
+    from .device_settings import DEFAULTS as DEVICE_DEFAULTS, DeviceSettings
+    from .qa_tools import tool_catalog
     from . import quote_agent, pi_bridge, bot_plugins, wechat_reply
     from . import feishu as feishu_mod
     from . import dingtalk as dingtalk_mod
@@ -29,6 +31,8 @@ except ImportError:  # 允许 python3 server/sync_server.py 直接运行
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from server.relay import RelayListener
     from server.store import Store, QuoteLog, device_id_of
+    from server.device_settings import DEFAULTS as DEVICE_DEFAULTS, DeviceSettings
+    from server.qa_tools import tool_catalog
     from server import quote_agent, pi_bridge, bot_plugins, wechat_reply
     from server import feishu as feishu_mod
     from server import dingtalk as dingtalk_mod
@@ -207,10 +211,76 @@ class Handler(BaseHTTPRequestHandler):
             item["online"] = True
             item["remote"] = online.get("remote") or ""
             item["connectedAt"] = online.get("connectedAt") or 0
+        # 待取走的下行指令：设备离线时会在服务端排队
+        pending = listener.pending() if listener is not None else {"global": {"count": 0, "oldestAt": 0}, "devices": {}}
+        for did, info in pending["devices"].items():
+            if did not in by_id and (info["count"] or info["dropped"]):
+                item = {"deviceId": did, "deviceName": "", "count": 0, "rooms": 0, "lastAt": 0}
+                known.append(item)
+                by_id[did] = item
+        settings = getattr(self.server, "device_settings", None)
         for item in known:
             item.setdefault("online", False)
+            info = pending["devices"].get(item["deviceId"]) or {}
+            item["pending"] = info.get("count", 0)
+            item["pendingOldestAt"] = info.get("oldestAt", 0)
+            item["dropped"] = info.get("dropped", 0)
+            if settings is not None:
+                cfg = settings.get(item["deviceId"])
+                item["reply"] = cfg["reply"]
+                item["quotes"] = cfg["quotes"]
         self._json(200, {"ok": True, "devices": known,
-                         "online": sum(1 for d in known if d.get("online"))})
+                         "online": sum(1 for d in known if d.get("online")),
+                         "pendingGlobal": pending["global"]})
+
+    def _handle_device_settings_get(self):
+        """每台设备的 Agent 设置：没改过的设备用 defaults。附带可选工具与固定的基础提示词。"""
+        settings = self.server.device_settings
+        self._json(200, {
+            "ok": True, "defaults": dict(DEVICE_DEFAULTS),
+            "devices": settings.all(), "tools": tool_catalog(),
+            "basePrompt": wechat_reply.WECHAT_REPLY_SYSTEM,
+            "replyAvailable": getattr(self.server, "wechat_replier", None) is not None,
+            "quotesAvailable": getattr(self.server, "agent", None) is not None,
+        })
+
+    def _handle_device_settings_set(self):
+        raw = self._read_body()
+        try:
+            body = json.loads(raw.decode("utf-8", "replace"))
+        except Exception:
+            self._json(400, {"ok": False, "error": "invalid json"})
+            return
+        if not isinstance(body, dict) or not isinstance(body.get("deviceId"), str):
+            self._json(400, {"ok": False, "error": "missing deviceId"})
+            return
+        device = body.pop("deviceId").strip()
+        names = {t["name"] for t in tool_catalog()}
+        try:
+            cfg = self.server.device_settings.update(device, body, names)
+        except ValueError as e:
+            self._json(400, {"ok": False, "error": str(e)})
+            return
+        print(f"[sync_server] device settings {device or '-'}: {cfg}")
+        self._json(200, {"ok": True, "deviceId": device, "settings": cfg})
+
+    def _handle_replies(self):
+        """回复记录：?after=<rev> 增量（含状态变化），?device= 只看某台设备。"""
+        replier = getattr(self.server, "wechat_replier", None)
+        if replier is None:
+            self._json(200, {"ok": True, "available": False, "rev": 0, "replies": []})
+            return
+        params = self._params()
+        try:
+            after = int(params.get("after", "0"))
+        except ValueError:
+            after = 0
+        try:
+            limit = min(max(int(params.get("limit", "200")), 1), 500)
+        except ValueError:
+            limit = 200
+        rows, rev = replier.log.list(after, params.get("device"), limit)
+        self._json(200, {"ok": True, "available": True, "rev": rev, "replies": rows})
 
     def _reply_view(self) -> dict:
         replier = getattr(self.server, "wechat_replier", None)
@@ -386,6 +456,12 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/devices":
             if self._require_auth():
                 self._handle_devices()
+        elif path == "/api/device-settings":
+            if self._require_auth():
+                self._handle_device_settings_get()
+        elif path == "/api/replies":
+            if self._require_auth():
+                self._handle_replies()
         elif path == "/api/stats":
             if self._require_auth():
                 self._handle_stats()
@@ -438,6 +514,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_ilink_login_start()
         elif path == "/api/reply":
             self._handle_reply_set()
+        elif path == "/api/device-settings":
+            self._handle_device_settings_set()
         else:
             self._handle_post()
 
@@ -463,8 +541,8 @@ class Handler(BaseHTTPRequestHandler):
         if not talker or not content:
             self._json(400, {"ok": False, "error": "missing talker/content"})
             return
-        listener.send(talker, content, device or None)
-        self._json(200, {"ok": True, "queued": True, "device": device,
+        send_id = listener.send(talker, content, device or None)
+        self._json(200, {"ok": True, "queued": True, "sendId": send_id, "device": device,
                          "clients": listener.client_count()})
 
     def log_message(self, fmt, *args):
@@ -499,6 +577,8 @@ def main():
     os.makedirs(args.data_dir, exist_ok=True)
     store = Store(args.data_dir)
     quote_log = QuoteLog(os.path.join(args.data_dir, "quotes", "quotes.jsonl"))
+    # 每台设备的 Agent 设置（回复/报价开关、提示词、工具），报价 Agent 与回复 Agent 共用
+    device_settings = DeviceSettings(os.path.join(args.data_dir, "device_settings.json"))
 
     # Agent 桥（pi-agent SDK；agent.config.json 未启用时返回 None）
     agent_cfg = quote_agent.load_config(args.agent_config)
@@ -516,6 +596,7 @@ def main():
     server.token = args.token
     server.bridge = bridge
     server.quote_log = quote_log
+    server.device_settings = device_settings
 
     # 飞书机器人：报价推送 + 问答 + 长连接/Webhook 事件
     server.feishu_bot = feishu_mod.create_feishu_bot(
@@ -558,24 +639,28 @@ def main():
                          ilink_client=server.ilink_bot, bot=server.ilink_bot)
     server.agent = quote_agent.create_agent(
         args.agent_config, args.data_dir,
-        on_quote=on_quote or None, bridge=bridge)
+        on_quote=on_quote or None, bridge=bridge, settings=device_settings)
 
-    def _downlink(talker: str, content: str, device_id: str = "") -> bool:
+    def _downlink(talker: str, content: str, device_id: str = "") -> str:
         listener = getattr(server, "relay_listener", None)
         if listener is None:
-            return False
+            return ""
         return listener.send(talker, content, device_id or None)
 
     server.wechat_replier = (
         wechat_reply.WechatReplier(
             bridge, _downlink, os.path.join(args.data_dir, "reply_switch.json"),
-            store=store, quote_log=quote_log)
+            store=store, quote_log=quote_log, settings=device_settings,
+            log_path=os.path.join(args.data_dir, "replies.json"))
         if bridge is not None else None)
 
     if args.socket_port > 0:
         server.relay_listener = RelayListener(
             args.bind, args.socket_port, store, server.agent, token=args.token,
             replier=server.wechat_replier)
+        if server.wechat_replier is not None:
+            # 回复记录跟踪下行指令是否被手机取走
+            server.relay_listener.on_send_status = server.wechat_replier.on_send_status
         server.relay_listener.start()
     else:
         server.relay_listener = None

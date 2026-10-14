@@ -9,6 +9,7 @@
 
 上行帧的 ack 可顺带携带一条下行发送指令：{"ok":true,"send":{"talker":"...","content":"..."}}。
 服务端通过 /api/send 入队，模块下次上行/心跳时取走；带 deviceId 的指令只发给该设备的连接。
+每条指令有服务端内部 id（不下发给模块），被取走/因队列溢出丢弃时经 on_send_status 通知。
 
 设备身份：握手帧可带 "deviceId" / "deviceName"（模块按「微信 wxid + ANDROID_ID」派生）。
 绑定后，该连接上报的消息都会打上 deviceId，落库与去重按设备分开。
@@ -19,6 +20,7 @@ import json
 import socket
 import threading
 import time
+import uuid
 
 from .store import Store
 
@@ -44,37 +46,71 @@ class RelayListener:
         # 无 deviceId 的进全局队列（谁先 ack 谁取），带 deviceId 的进该设备专属队列。
         self._outbox: "collections.deque[dict]" = collections.deque()
         self._device_outbox: dict[str, "collections.deque[dict]"] = {}
+        self._dropped: dict[str, int] = {}  # deviceId -> 因队列溢出丢弃的条数
         self._outbox_lock = threading.Lock()
+        # on_send_status(send_id, status, device_id)：status 为 delivered（被模块取走）/ dropped
+        self.on_send_status = None
 
-    def send(self, talker: str, content: str, device_id: str | None = None) -> bool:
-        """下发一条发送指令；返回是否成功入队（后续由模块 ack 时取走）。
+    def send(self, talker: str, content: str, device_id: str | None = None) -> str:
+        """下发一条发送指令；入队成功返回指令 id，失败返回空串（后续由模块 ack 时取走）。
 
         device_id 非空时只投给该设备（指令带 deviceId，模块端也会二次校验）。
+        以 "_" 开头的字段是服务端内部记录，下发前去掉。
         """
         if not talker or not content:
-            return False
-        item = {"talker": talker, "content": content}
+            return ""
+        send_id = uuid.uuid4().hex[:12]
+        item = {"talker": talker, "content": content, "_id": send_id, "_at": int(time.time() * 1000)}
         did = str(device_id or "").strip()
+        dropped = []
         with self._outbox_lock:
             if did:
                 item["deviceId"] = did
                 q = self._device_outbox.setdefault(did, collections.deque())
                 q.append(item)
                 while len(q) > MAX_DEVICE_OUTBOX:
-                    q.popleft()
+                    dropped.append(q.popleft())
+                    self._dropped[did] = self._dropped.get(did, 0) + 1
             else:
                 self._outbox.append(item)
-        return True
+        for old in dropped:
+            self._notify(old, "dropped", did)
+        return send_id
 
     def _next_send(self, device_id: str = "") -> dict | None:
         with self._outbox_lock:
+            item = None
             if device_id:
                 q = self._device_outbox.get(device_id)
                 if q:
-                    return q.popleft()
-            if not self._outbox:
-                return None
-            return self._outbox.popleft()
+                    item = q.popleft()
+            if item is None and self._outbox:
+                item = self._outbox.popleft()
+        if item is None:
+            return None
+        self._notify(item, "delivered", device_id)
+        return {k: v for k, v in item.items() if not k.startswith("_")}
+
+    def _notify(self, item: dict, status: str, device_id: str):
+        hook = self.on_send_status
+        if hook is None or not item.get("_id"):
+            return
+        try:
+            hook(item["_id"], status, device_id)
+        except Exception:
+            pass
+
+    def pending(self) -> dict:
+        """待取走的下行指令：全局队列与每台设备的条数、最早入队时间、累计丢弃数。"""
+        with self._outbox_lock:
+            devices = {}
+            for did in set(self._device_outbox) | set(self._dropped):
+                q = self._device_outbox.get(did) or ()
+                devices[did] = {"count": len(q), "oldestAt": q[0]["_at"] if q else 0,
+                                "dropped": self._dropped.get(did, 0)}
+            return {"global": {"count": len(self._outbox),
+                               "oldestAt": self._outbox[0]["_at"] if self._outbox else 0},
+                    "devices": devices}
 
     def start(self):
         threading.Thread(target=self._accept_loop, daemon=True, name="relay-socket").start()

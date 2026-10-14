@@ -36,6 +36,7 @@ from server.wechat_quote import is_quote_message, quote_analysis_text
 from server.quote_messages import analysis_units, is_merged
 from server.quote_rules import EXTRACTION_CONTRACT, QuoteLedger, digest, display_conditions
 from server.quote_skill import quote_guidance
+from server.device_settings import DeviceSettings
 from server.store import device_id_of, safe_name
 
 IMAGE_WAIT_S = 10          # 图片延迟处理，等同消息的原图到达
@@ -122,7 +123,10 @@ def message_summary(msg: dict) -> str:
 
 
 class QuoteAgent:
-    def __init__(self, config: dict, data_dir: str, on_quote=None, bridge=None):
+    settings = None  # DeviceSettings | None：按设备决定是否提取报价，None 时全部提取
+
+    def __init__(self, config: dict, data_dir: str, on_quote=None, bridge=None, settings=None):
+        self.settings = settings
         self.base_url = str(config.get("base_url") or "").rstrip("/")
         self.api_key = str(config.get("api_key") or "")
         self.model = str(config["model"])
@@ -260,12 +264,16 @@ class QuoteAgent:
 
     # ---------- 入队 ----------
 
+    def extracts(self, msg: dict) -> bool:
+        """这台设备是否做报价提取（设备的 Agent 不一定用于报价）。"""
+        return self.settings is None or self.settings.get(device_id_of(msg))["quotes"]
+
     def enqueue(self, rec: dict):
         """消息落盘后调用。文本和引用立即处理；图片延迟等原图并按 svr 合并。"""
         msg = rec.get("msg") or {}
         mtype = msg.get("type")
         seq = rec.get("seq")
-        if seq in self._processed:
+        if seq in self._processed or not self.extracts(msg):
             return
         if mtype == 1 or is_quote_message(msg) or is_merged(msg):
             self._push(rec, time.time())
@@ -565,13 +573,15 @@ class QuoteAgent:
         self._written_quote_ids.update(it["quoteId"] for it in items if it.get("quoteId"))
 
 
-def create_agent(config_path: str, data_dir: str, on_quote=None, bridge=None) -> QuoteAgent | None:
+def create_agent(config_path: str, data_dir: str, on_quote=None, bridge=None,
+                 settings=None) -> QuoteAgent | None:
     """供 chat_viewer 内嵌使用；配置缺失/未启用时返回 None。
-    on_quote: quote 行列表 -> None 的钩子（飞书推送）；bridge: 可选 PiBridge。"""
+    on_quote: quote 行列表 -> None 的钩子（飞书推送）；bridge: 可选 PiBridge；
+    settings: DeviceSettings，关掉报价的设备不提取。"""
     cfg = load_config(config_path)
     if not cfg:
         return None
-    agent = QuoteAgent(cfg, data_dir, on_quote=on_quote, bridge=bridge)
+    agent = QuoteAgent(cfg, data_dir, on_quote=on_quote, bridge=bridge, settings=settings)
     kind = "bridge:" + bridge.backend_kind if bridge is not None else "native"
     print(f"[sync_server] quote agent enabled: model={agent.model} ({kind}) -> {agent.quotes_dir}")
     return agent
@@ -594,7 +604,9 @@ def backfill(config_path: str, data_dir: str):
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(line)
 
-    # 第一遍：收集记录；图片按 svr 取最佳（imgSize 最大）
+    # 第一遍：收集记录；图片按 svr 取最佳（imgSize 最大）；关掉报价的设备不重建
+    settings = DeviceSettings(os.path.join(data_dir, "device_settings.json"))
+    skipped = 0
     records = []
     best_img: dict[str, dict] = {}
     log_path_jsonl = os.path.join(data_dir, "messages.jsonl")
@@ -609,6 +621,9 @@ def backfill(config_path: str, data_dir: str):
                 continue
             msg = rec.get("msg") or {}
             msg.pop("imageBase64", None)  # 释放大字段
+            if not settings.get(device_id_of(msg))["quotes"]:
+                skipped += 1
+                continue
             if msg.get("type") == 1 or is_quote_message(msg) or is_merged(msg):
                 records.append(rec)
             elif msg.get("type") == 3 and rec.get("imgFile"):
@@ -654,7 +669,7 @@ def backfill(config_path: str, data_dir: str):
         for name in os.listdir(staging):
             if name.endswith(".md") or name in ("events.jsonl", "quotes.jsonl", "state.json"):
                 os.replace(os.path.join(staging, name), os.path.join(output_dir, name))
-        log(f"done: analyzed={len(records)} events={len(agent.ledger.events)} quotes={agent._qseq}")
+        log(f"done: analyzed={len(records)} skipped_devices={skipped} events={len(agent.ledger.events)} quotes={agent._qseq}")
     return 0
 
 

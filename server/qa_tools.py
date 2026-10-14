@@ -194,3 +194,9 @@ def build_qa_tools(store, quote_log, device: str | None = None) -> list[dict]:
          }}, "handler": compare},
     ])
     return tools
+
+
+def tool_catalog() -> list[dict]:
+    """可供设备 Agent 勾选的工具（名称/标签/说明），给网页设备设置用。"""
+    return [{"name": t["name"], "label": t.get("label") or t["name"], "description": t.get("description") or ""}
+            for t in build_qa_tools(None, None)]

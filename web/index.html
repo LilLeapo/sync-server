@@ -17,6 +17,8 @@
     --accent-ink: #059748;
     --accent-soft: rgba(7, 193, 96, 0.12);
     --danger: #e6432d;
+    --warn: #b7791f;
+    --warn-soft: rgba(214, 150, 40, 0.16);
     --chip: rgba(26, 28, 30, 0.06);
     --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
     --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
@@ -34,6 +36,8 @@
       --accent-ink: #2bd67c;
       --accent-soft: rgba(10, 208, 100, 0.16);
       --danger: #f26d5b;
+      --warn: #e9b04f;
+      --warn-soft: rgba(233, 176, 79, 0.18);
       --chip: rgba(255, 255, 255, 0.08);
     }
   }
@@ -179,6 +183,16 @@
   .device__name { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .device__count { font-size: 10px; color: var(--muted); }
   .device.active .device__count { color: var(--accent-ink); }
+  /* 只在偏离默认时出现：关了回复/报价、有待发指令 */
+  .device__tag { font-size: 10px; color: var(--faint); }
+  .device__pending {
+    padding: 0 5px;
+    border-radius: 4px;
+    background: var(--warn-soft);
+    color: var(--warn);
+    font-size: 10px;
+    font-weight: 600;
+  }
 
   /* ---------- 主区 ---------- */
   .main { display: flex; flex-direction: column; min-height: 0; position: relative; }
@@ -638,6 +652,95 @@
   }
   .ilink-hint { font-size: 12px; color: var(--muted); }
 
+  /* ---------- 设备设置弹窗 ---------- */
+  .dev-modal {
+    position: fixed; inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+    z-index: 70;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+  }
+  .dev-modal[hidden] { display: none; }
+  .dev-modal__box {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    width: 480px;
+    max-width: 100%;
+    max-height: 100%;
+    overflow-y: auto;
+    padding: 22px 22px 18px;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+  }
+  .dev-modal__box > b { font-size: 16px; padding-right: 24px; }
+  .dev-sub { margin-top: -10px; font: 11px var(--mono); color: var(--muted); word-break: break-all; }
+  .dev-queue { font-size: 12px; color: var(--muted); padding: 8px 10px; border-radius: 8px; background: var(--chip); }
+  .dev-queue.warn { color: var(--warn); background: var(--warn-soft); }
+  .dev-switch { display: flex; gap: 10px; align-items: flex-start; font-size: 13px; cursor: pointer; }
+  .dev-switch input { margin-top: 3px; accent-color: var(--accent); }
+  .dev-switch small, .dev-field small { display: block; margin-top: 2px; font-size: 11.5px; color: var(--muted); }
+  .dev-field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+  .dev-field__head { display: flex; align-items: baseline; gap: 10px; }
+  .dev-field textarea {
+    width: 100%;
+    min-height: 96px;
+    padding: 8px 10px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--bg);
+    color: var(--ink);
+    font: 13px/1.5 var(--sans);
+    resize: vertical;
+  }
+  .dev-field textarea:focus { outline: none; border-color: var(--accent); }
+  .dev-field details { font-size: 12px; color: var(--muted); }
+  .dev-field summary { cursor: pointer; }
+  .dev-field pre {
+    margin: 6px 0 0;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: var(--chip);
+    font: 11.5px/1.5 var(--mono);
+    white-space: pre-wrap;
+  }
+  .linkish { border: 0; padding: 0; background: none; color: var(--accent-ink); font-size: 12px; cursor: pointer; }
+  .dev-tools { display: flex; flex-direction: column; gap: 6px; }
+  .dev-tool { display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; cursor: pointer; }
+  .dev-tool input { margin-top: 2px; accent-color: var(--accent); }
+  .dev-tool code { font: 11px var(--mono); color: var(--faint); }
+  .dev-hint { font-size: 11.5px; color: var(--warn); }
+  .dev-actions { display: flex; align-items: center; gap: 8px; }
+  .dev-actions .btn.primary { background: var(--accent); color: #fff; border-color: transparent; }
+  .dev-status { flex: 1; font: 11px var(--mono); color: var(--muted); }
+  .dev-status.err { color: var(--danger); }
+
+  /* ---------- 回复记录 ---------- */
+  .rcard {
+    max-width: 720px;
+    margin: 8px 0;
+    padding: 10px 12px;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    font-size: 13px;
+  }
+  .rcard__meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font: 11px var(--mono); color: var(--muted); }
+  .rcard__status { margin-left: auto; padding: 0 6px; border-radius: 4px; font-size: 10.5px; font-weight: 600; background: var(--chip); color: var(--muted); }
+  .rcard__status.ok { background: var(--accent-soft); color: var(--accent-ink); }
+  .rcard__status.wait { background: var(--warn-soft); color: var(--warn); }
+  .rcard__status.bad { background: var(--danger); color: #fff; }
+  .rcard__q { margin-top: 6px; color: var(--muted); white-space: pre-wrap; word-break: break-word; }
+  .rcard__q b { color: var(--ink); font-weight: 600; }
+  .rcard__a { margin-top: 6px; padding-left: 10px; border-left: 2px solid var(--accent); white-space: pre-wrap; word-break: break-word; }
+  .rcard__a.none { border-left-color: var(--line); color: var(--faint); }
+  .rcard__reason { margin-top: 6px; font-size: 12px; color: var(--muted); }
+  .rcard.bad .rcard__reason { color: var(--danger); }
+
   ::-webkit-scrollbar { width: 9px; height: 9px; }
   ::-webkit-scrollbar-thumb { background: rgba(128, 132, 140, 0.35); border-radius: 999px; border: 2px solid transparent; background-clip: content-box; }
 
@@ -696,7 +799,9 @@
       <div class="spacer"></div>
       <span class="pill"><span class="dot" id="liveDot"></span><span id="liveText">离线</span></span>
       <button class="btn" id="stickBtn" title="有新消息时自动滚动到底部">自动滚动</button>
+      <button class="btn" id="devSetBtn" hidden title="这台设备的 Agent：回复/报价开关、提示词、工具">设备设置</button>
       <button class="btn" id="replyBtn" title="群里被 @ 时由 Agent 自动回复">回复关</button>
+      <button class="btn" id="repliesBtn" title="被 @ 后 Agent 回了什么、是否已下发到手机">回复记录</button>
       <button class="btn" id="quotesBtn" title="查看 Agent 提取的报价">报价</button>
       <button class="btn" id="ilinkBtn" title="微信 iLink 私聊机器人登录">微信扫码</button>
       <button class="btn" id="exportBtn">导出 JSON</button>
@@ -734,6 +839,42 @@
     </div>
     <button class="btn primary" id="ilinkLoginBtn">开始扫码登录</button>
     <div class="ilink-hint">二维码 8 分钟内有效，过期可重新获取</div>
+  </div>
+</div>
+
+<div class="dev-modal" id="devModal" hidden>
+  <div class="dev-modal__box" role="dialog" aria-modal="true" aria-labelledby="devTitle">
+    <button class="ilink-modal__close" id="devClose" title="关闭">×</button>
+    <b id="devTitle">设备设置</b>
+    <div class="dev-sub" id="devSub"></div>
+    <div class="dev-queue" id="devQueue"></div>
+    <label class="dev-switch">
+      <input type="checkbox" id="devReply" />
+      <span>自动回复<small>群里 @ 这个微信号时由它的 Agent 回复；顶栏「回复」总开关关闭时所有设备都不回复</small></span>
+    </label>
+    <label class="dev-switch">
+      <input type="checkbox" id="devQuotes" />
+      <span>报价提取<small>从这台设备抓到的群消息里提取报价；不做报价的设备关掉即可</small></span>
+    </label>
+    <div class="dev-field">
+      <span>Agent 提示词<small>这台设备的 Agent 负责什么、用什么口吻；留空就是通用群助手</small></span>
+      <textarea id="devPrompt" maxlength="4000" placeholder="例如：你是物流售后，只回答发货和到货时间相关的问题。"></textarea>
+      <details><summary>始终生效的基础规则</summary><pre id="devBasePrompt"></pre></details>
+    </div>
+    <div class="dev-field">
+      <div class="dev-field__head">
+        <span>可用工具</span>
+        <button type="button" class="linkish" id="devToolsAll">全选</button>
+        <button type="button" class="linkish" id="devToolsNone">全不选</button>
+      </div>
+      <div class="dev-tools" id="devTools"></div>
+      <div class="dev-hint" id="devToolsHint" hidden>报价提取已关：报价类工具只能查到这台设备以前提取的报价</div>
+    </div>
+    <div class="dev-actions">
+      <span class="dev-status" id="devStatus"></span>
+      <button class="btn" id="devCancel">取消</button>
+      <button class="btn primary" id="devSave">保存</button>
+    </div>
   </div>
 </div>
 
@@ -777,7 +918,12 @@
     stick: true,
     online: false,
     stats: null,           // 最近一次 /api/stats（含 socketClients）
-    view: "messages",      // messages | quotes
+    view: "messages",      // messages | quotes | replies
+    replies: new Map(),    // 回复记录 id -> 记录（按 rev 增量合并，状态会从待取走变成已下发）
+    replyRev: 0,
+    agentCfg: null,        // /api/device-settings：defaults / devices / tools / basePrompt
+    pendingGlobal: null,   // 未定向设备的待发指令（任一手机取走）
+    editingDevice: null,   // 设备设置弹窗正在编辑的 deviceId
     quotes: [],
     quoteIds: new Set(),
     lastQseq: 0,
@@ -949,14 +1095,44 @@
       showTokenGate();
       throw new Error("未授权");
     }
-    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    if (!resp.ok) {
+      let msg = "HTTP " + resp.status;
+      try {
+        const body = await resp.json();
+        if (body && body.error) msg += " " + body.error;
+      } catch (e) { /* 非 JSON 错误体 */ }
+      throw new Error(msg);
+    }
     return resp.json();
+  }
+
+  async function loadDevices() {
+    const data = await api("/api/devices");
+    state.devices = data.devices || [];
+    state.pendingGlobal = data.pendingGlobal || null;
+  }
+
+  // 回复记录按 rev 增量拉取：新记录和状态变化（待取走 → 已下发）都会带回来
+  async function loadReplies() {
+    const data = await api("/api/replies?after=" + state.replyRev + "&limit=500");
+    if ((data.rev || 0) < state.replyRev) {
+      // 服务端记录被重建（rev 变小）：整体重拉
+      state.replies.clear();
+      state.replyRev = 0;
+      return loadReplies();
+    }
+    const rows = data.replies || [];
+    for (const r of rows) state.replies.set(r.id, r);
+    while (state.replies.size > 600) state.replies.delete(state.replies.keys().next().value);
+    state.replyRev = data.rev || state.replyRev;
+    return rows.length > 0;
   }
 
   async function initialLoad() {
     const stats = await api("/api/stats");
     state.total = stats.count || 0;
-    state.devices = (await api("/api/devices")).devices || [];
+    await loadDevices();
+    try { await loadReplies(); } catch (e) { /* 回复记录不可用不影响消息流 */ }
     updateFoot(stats);
     const after = Math.max(0, state.total - PAGE);
     const data = await api("/api/messages?after=" + after + "&limit=" + (PAGE + POLL_LIMIT));
@@ -993,7 +1169,7 @@
       if (++state.polls % ROOMS_EVERY === 0) {
         try {
           state.rooms = (await api(roomsUrl())).rooms || [];
-          state.devices = (await api("/api/devices")).devices || [];
+          await loadDevices();
           updateFoot(await api("/api/stats"));
           renderRooms();
           renderDevices();
@@ -1009,6 +1185,9 @@
           if (state.view === "quotes") renderFeed();
         }
       } catch (e) { /* 报价接口失败不影响主状态 */ }
+      try {
+        if ((await loadReplies()) && state.view === "replies") renderFeed();
+      } catch (e) { /* 回复记录接口失败不影响主状态 */ }
       setOnline(true);
     } catch (e) {
       setOnline(false, e.message);
@@ -1072,18 +1251,31 @@
     $("#deviceHead").textContent = state.devices.length
       ? state.devices.length + " 台 · 在线 " + online
       : "—";
-    const items = [{ deviceId: null, label: "全部设备", count: total, online: online > 0 }].concat(
+    const globalPending = state.pendingGlobal ? state.pendingGlobal.count || 0 : 0;
+    const items = [{
+      deviceId: null, label: "全部设备", count: total, online: online > 0, pending: globalPending,
+      title: globalPending ? "未指定设备的待发指令 " + globalPending + " 条（任一手机上报或心跳时取走）" : "",
+    }].concat(
       state.devices.map((d) => ({
         deviceId: d.deviceId == null ? "" : String(d.deviceId),
         label: deviceLabel(d.deviceId == null ? "" : String(d.deviceId)),
-        title: (d.deviceName ? d.deviceName + "\n" : "") + (d.deviceId || "无设备标识（升级前数据）") +
-          (d.remote ? "\n" + d.remote : ""),
+        title: [
+          (d.deviceName ? d.deviceName + "\n" : "") + (d.deviceId || "无设备标识（升级前数据）"),
+          d.remote || "",
+          "自动回复 " + (d.reply === false ? "关" : "开") + " · 报价提取 " + (d.quotes === false ? "关" : "开"),
+          d.pending ? "待发 " + d.pending + " 条，最早 " + fmtAgo(d.pendingOldestAt) + "入队" : "",
+          d.dropped ? "离线太久已丢弃 " + d.dropped + " 条" : "",
+        ].filter(Boolean).join("\n"),
         count: d.count || 0,
         online: !!d.online,
+        pending: d.pending || 0,
+        reply: d.reply !== false,
+        quotes: d.quotes !== false,
       })));
     deviceList.innerHTML = items.map((item) => {
       const active = state.selectedDevice === item.deviceId ? " active" : "";
       const value = item.deviceId == null ? "" : item.deviceId;
+      const one = item.deviceId != null;
       return (
         '<button class="device' + active + '" data-device="' + escapeHtml(value) + '"' +
         ' data-all="' + (item.deviceId == null ? "1" : "0") + '"' +
@@ -1091,9 +1283,23 @@
         '<span class="device__dot' + (item.online ? " on" : "") + '"></span>' +
         '<span class="device__name">' + escapeHtml(item.label) + "</span>" +
         '<span class="device__count">' + item.count + "</span>" +
+        (one && !item.reply ? '<span class="device__tag">不回复</span>' : "") +
+        (one && !item.quotes ? '<span class="device__tag">不提取</span>' : "") +
+        (item.pending ? '<span class="device__pending">待发 ' + item.pending + "</span>" : "") +
         "</button>"
       );
     }).join("");
+    // 设备设置针对单台设备，「全部设备」时不显示
+    $("#devSetBtn").hidden = state.selectedDevice === null;
+  }
+
+  function fmtAgo(ms) {
+    if (!ms) return "";
+    const min = Math.floor((Date.now() - ms) / 60000);
+    if (min < 1) return "刚刚";
+    if (min < 60) return min + " 分钟前";
+    if (min < 1440) return Math.floor(min / 60) + " 小时前";
+    return Math.floor(min / 1440) + " 天前";
   }
 
   async function selectDevice(id) {
@@ -1113,6 +1319,10 @@
   function renderFeed() {
     if (state.view === "quotes") {
       renderQuotes();
+      return;
+    }
+    if (state.view === "replies") {
+      renderReplies();
       return;
     }
     const list = visibleMessages();
@@ -1328,6 +1538,84 @@
       '<div class="app-card__title">' + escapeHtml(titleHtml) + "</div>" +
       (subHtml ? '<div class="app-card__sub">' + subHtml + "</div>" : "") +
       "</div></div>"
+    );
+  }
+
+  /* ---------- 回复记录 ---------- */
+
+  // [显示文字, 样式]：ok 绿 / wait 黄 / bad 红 / "" 灰
+  const REPLY_STATUS = {
+    answering: ["生成中…", "wait"],
+    queued: ["待手机取走", "wait"],
+    delivered: ["已下发到手机", "ok"],
+    skipped: ["未回复", ""],
+    failed: ["失败", "bad"],
+    dropped: ["已丢弃", "bad"],
+    lost: ["未确认", ""],
+  };
+
+  function visibleReplies() {
+    let list = Array.from(state.replies.values()).sort((a, b) => a.id - b.id);
+    if (state.selectedRoom) list = list.filter((r) => r.roomId === state.selectedRoom);
+    if (state.selectedDevice !== null) list = list.filter((r) => (r.deviceId || "") === state.selectedDevice);
+    if (state.search) {
+      const q = state.search.toLowerCase();
+      list = list.filter((r) => [r.question, r.reply, r.senderName, r.sender, r.roomName, r.reason]
+        .filter(Boolean).join(" ").toLowerCase().includes(q));
+    }
+    return list;
+  }
+
+  function renderReplies() {
+    const list = visibleReplies();
+    $("#roomCount").textContent = list.length + " 条回复记录";
+    if (!list.length) {
+      const available = !!(state.stats && state.stats.replyAvailable);
+      feed.innerHTML =
+        '<div class="feed__empty"><b>暂无回复记录</b><span>' +
+        (available
+          ? "群里有人 @ 手机上的微信号后，Agent 回了什么、有没有下发到手机都会记在这里"
+          : "未配置 Agent（agent.config.json），不会自动回复") +
+        "</span></div>";
+      return;
+    }
+    let html = "";
+    let lastDate = "";
+    for (const r of list) {
+      const date = fmtDate(r.at);
+      if (date !== lastDate) {
+        lastDate = date;
+        html += '<div class="date-sep"><span>' + date + "</span></div>";
+      }
+      html += replyCardHtml(r);
+    }
+    feed.innerHTML = html;
+    if (state.stick) scrollBottom();
+  }
+
+  function replyCardHtml(r) {
+    const st = REPLY_STATUS[r.status] || [r.status, ""];
+    const dev = r.deviceId || "";
+    const devTag = state.selectedDevice !== null
+      ? ""
+      : '<span class="row__device" title="' + escapeHtml(dev || "无设备标识（升级前数据）") + '">' + escapeHtml(deviceLabel(dev)) + "</span>";
+    const roomTag = state.selectedRoom
+      ? ""
+      : '<span class="row__room" title="' + escapeHtml(r.roomId) + '">' + escapeHtml(r.roomName || shortRoom(r.roomId)) + "</span>";
+    let note = r.reason || "";
+    if (r.status === "queued") note = "等这台手机下次上报或心跳时取走；手机离线时会一直排队";
+    if (r.status === "delivered" && r.deliveredAt) note = fmtTime(r.deliveredAt) + " 被手机取走，由手机端模块发出";
+    const asker = r.senderName || r.sender || "";
+    return (
+      '<div class="rcard' + (st[1] === "bad" ? " bad" : "") + '">' +
+      '<div class="rcard__meta">' +
+      '<span title="' + escapeHtml(new Date(r.at).toLocaleString()) + '">' + fmtTime(r.at) + "</span>" +
+      devTag + roomTag +
+      '<span class="rcard__status ' + st[1] + '">' + escapeHtml(st[0]) + "</span></div>" +
+      '<div class="rcard__q">' + (asker ? "<b>" + escapeHtml(asker) + "</b>：" : "") + escapeHtml(r.question || "") + "</div>" +
+      (r.reply ? '<div class="rcard__a">' + escapeHtml(r.reply) + "</div>" : "") +
+      (note ? '<div class="rcard__reason">' + escapeHtml(note) + "</div>" : "") +
+      "</div>"
     );
   }
 
@@ -1660,7 +1948,7 @@
     btn.classList.toggle("on", available && on);
     btn.textContent = !available ? "回复不可用" : (on ? "回复开" : "回复关");
     btn.title = available
-      ? "点击切换：群里被 @ 时是否由 Agent 自动回复"
+      ? "总开关：关掉后所有设备都不自动回复；单台设备在「设备设置」里开关"
       : "未配置 Agent，无法自动回复";
   }
 
@@ -1836,11 +2124,16 @@
   });
 
   $("#replyBtn").addEventListener("click", () => toggleReply().catch((e) => setOnline(false, e.message)));
-  $("#quotesBtn").addEventListener("click", () => {
-    state.view = state.view === "quotes" ? "messages" : "quotes";
+  // 报价 / 回复记录是消息流之外的两个视图，再点一次回到消息流
+  function toggleView(view) {
+    state.view = state.view === view ? "messages" : view;
     $("#quotesBtn").classList.toggle("on", state.view === "quotes");
+    $("#repliesBtn").classList.toggle("on", state.view === "replies");
     renderFeed();
-  });
+  }
+  $("#quotesBtn").addEventListener("click", () => toggleView("quotes"));
+  $("#repliesBtn").addEventListener("click", () => toggleView("replies"));
+  $("#devSetBtn").addEventListener("click", () => openDevSettings().catch((e) => setOnline(false, e.message)));
   $("#stickBtn").addEventListener("click", () => setStick(!state.stick));
   $("#jumpBtn").addEventListener("click", () => setStick(true));
   $("#exportBtn").addEventListener("click", () => doExport().catch((e) => setOnline(false, e.message)));
@@ -1856,7 +2149,116 @@
       closeLightbox();
       closeSidebar();
       closeIlink();
+      closeDevSettings();
     }
+  });
+
+  /* ---------- 设备设置：每台设备的 Agent 不一定做报价 ---------- */
+
+  function deviceCfg(id) {
+    const cfg = state.agentCfg || {};
+    return Object.assign({}, cfg.defaults || {}, (cfg.devices || {})[id] || {});
+  }
+
+  function devQueueText(d) {
+    if (!d || !d.pending) {
+      return (d && d.dropped ? "没有待发指令（之前离线太久丢弃过 " + d.dropped + " 条）" : "没有待发指令");
+    }
+    return "待发 " + d.pending + " 条，最早 " + fmtAgo(d.pendingOldestAt) + "入队，等这台手机上报或心跳时取走" +
+      (d.dropped ? "；离线太久已丢弃 " + d.dropped + " 条" : "");
+  }
+
+  function syncToolsHint() {
+    $("#devToolsHint").hidden = $("#devQuotes").checked;
+  }
+
+  async function openDevSettings() {
+    const id = state.selectedDevice;
+    if (id === null) return;
+    state.agentCfg = await api("/api/device-settings");
+    state.editingDevice = id;
+    const cfg = deviceCfg(id);
+    const d = state.devices.find((x) => x.deviceId === id);
+    $("#devTitle").textContent = deviceLabel(id) + " · 设备设置";
+    $("#devSub").textContent = (id || "无设备标识（升级前的旧模块）") + (d && d.online ? " · 在线" : " · 离线");
+    $("#devQueue").textContent = devQueueText(d);
+    $("#devQueue").classList.toggle("warn", !!(d && (d.pending || d.dropped)));
+    $("#devReply").checked = cfg.reply !== false;
+    $("#devQuotes").checked = cfg.quotes !== false;
+    $("#devPrompt").value = cfg.prompt || "";
+    $("#devBasePrompt").textContent = state.agentCfg.basePrompt || "";
+    // tools 为 null 表示全部工具（含以后新增的）
+    const picked = cfg.tools == null ? null : new Set(cfg.tools);
+    $("#devTools").innerHTML = (state.agentCfg.tools || []).map((t) =>
+      '<label class="dev-tool"><input type="checkbox" value="' + escapeHtml(t.name) + '"' +
+      (picked === null || picked.has(t.name) ? " checked" : "") + " />" +
+      "<span>" + escapeHtml(t.label) + " <code>" + escapeHtml(t.name) + "</code>" +
+      "<small>" + escapeHtml(t.description) + "</small></span></label>").join("");
+    syncToolsHint();
+    const status = $("#devStatus");
+    status.className = "dev-status";
+    status.textContent = state.agentCfg.replyAvailable ? "" : "未配置 Agent：设置会保存，配置 agent.config.json 后生效";
+    $("#devSave").disabled = false;
+    $("#devModal").hidden = false;
+  }
+
+  function closeDevSettings() {
+    $("#devModal").hidden = true;
+    state.editingDevice = null;
+  }
+
+  async function saveDevSettings() {
+    const id = state.editingDevice;
+    if (id === null) return;
+    const boxes = Array.from(document.querySelectorAll("#devTools input"));
+    const picked = boxes.filter((b) => b.checked).map((b) => b.value);
+    const body = {
+      deviceId: id,
+      reply: $("#devReply").checked,
+      quotes: $("#devQuotes").checked,
+      prompt: $("#devPrompt").value,
+      // 全选时存 null：以后新增的工具对这台设备也自动可用
+      tools: picked.length === boxes.length ? null : picked,
+    };
+    const status = $("#devStatus");
+    const btn = $("#devSave");
+    btn.disabled = true;
+    status.className = "dev-status";
+    status.textContent = "保存中…";
+    try {
+      const resp = await api("/api/device-settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      state.agentCfg.devices = Object.assign({}, state.agentCfg.devices, { [id]: resp.settings });
+      // 设备标签上的「不回复 / 不提取」立即跟上，不等下一轮轮询
+      const d = state.devices.find((x) => x.deviceId === id);
+      if (d) {
+        d.reply = resp.settings.reply;
+        d.quotes = resp.settings.quotes;
+      }
+      renderDevices();
+      closeDevSettings();
+    } catch (e) {
+      status.className = "dev-status err";
+      status.textContent = "保存失败：" + (e && e.message ? e.message : e);
+      btn.disabled = false;
+    }
+  }
+
+  function setAllTools(on) {
+    document.querySelectorAll("#devTools input").forEach((b) => { b.checked = on; });
+  }
+
+  $("#devClose").addEventListener("click", closeDevSettings);
+  $("#devCancel").addEventListener("click", closeDevSettings);
+  $("#devSave").addEventListener("click", saveDevSettings);
+  $("#devQuotes").addEventListener("change", syncToolsHint);
+  $("#devToolsAll").addEventListener("click", () => setAllTools(true));
+  $("#devToolsNone").addEventListener("click", () => setAllTools(false));
+  $("#devModal").addEventListener("click", (e) => {
+    if (e.target === e.currentTarget) closeDevSettings();
   });
 
   /* ---------- 微信 iLink 扫码登录 ---------- */
