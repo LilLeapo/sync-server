@@ -8,19 +8,24 @@
                                       （60s 内重复投递回 {"ok":true,"dup":true}）
 
 上行帧的 ack 可顺带携带一条下行发送指令：{"ok":true,"send":{"talker":"...","content":"..."}}。
-服务端通过 /api/send 入队，模块下次上行/心跳时取走。
+服务端通过 /api/send 入队，模块下次上行/心跳时取走；带 deviceId 的指令只发给该设备的连接。
+
+设备身份：握手帧可带 "deviceId" / "deviceName"（模块按「微信 wxid + ANDROID_ID」派生）。
+绑定后，该连接上报的消息都会打上 deviceId，落库与去重按设备分开。
 """
 import collections
 import hmac
 import json
 import socket
 import threading
+import time
 
 from .store import Store
 
 MAX_SOCKET_LINE = 34 * 1024 * 1024  # 帧上限（容纳 base64 原图）
 HELLO_TIMEOUT_S = 5
 IDLE_TIMEOUT_S = 120  # 模块 30s 心跳，两倍余量判死
+MAX_DEVICE_OUTBOX = 200  # 单设备待发指令上限，模块长期离线时丢弃最旧的
 
 
 class RelayListener:
@@ -32,22 +37,41 @@ class RelayListener:
         self.agent = agent
         self.replier = replier
         self.token = token or ""
-        self._clients: set[socket.socket] = set()
+        # 已连接模块：socket -> {device_id, device_name, remote, connectedAt, count}
+        self._clients: dict[socket.socket, dict] = {}
         self._lock = threading.Lock()
         # 下行发送队列：服务端调用 send() 入队，每个已连接的模块在 ack 里取一条带走。
+        # 无 deviceId 的进全局队列（谁先 ack 谁取），带 deviceId 的进该设备专属队列。
         self._outbox: "collections.deque[dict]" = collections.deque()
+        self._device_outbox: dict[str, "collections.deque[dict]"] = {}
         self._outbox_lock = threading.Lock()
 
-    def send(self, talker: str, content: str) -> bool:
-        """下发一条发送指令；返回是否成功入队（后续由模块 ack 时取走）。"""
+    def send(self, talker: str, content: str, device_id: str | None = None) -> bool:
+        """下发一条发送指令；返回是否成功入队（后续由模块 ack 时取走）。
+
+        device_id 非空时只投给该设备（指令带 deviceId，模块端也会二次校验）。
+        """
         if not talker or not content:
             return False
+        item = {"talker": talker, "content": content}
+        did = str(device_id or "").strip()
         with self._outbox_lock:
-            self._outbox.append({"talker": talker, "content": content})
+            if did:
+                item["deviceId"] = did
+                q = self._device_outbox.setdefault(did, collections.deque())
+                q.append(item)
+                while len(q) > MAX_DEVICE_OUTBOX:
+                    q.popleft()
+            else:
+                self._outbox.append(item)
         return True
 
-    def _next_send(self) -> dict | None:
+    def _next_send(self, device_id: str = "") -> dict | None:
         with self._outbox_lock:
+            if device_id:
+                q = self._device_outbox.get(device_id)
+                if q:
+                    return q.popleft()
             if not self._outbox:
                 return None
             return self._outbox.popleft()
@@ -59,6 +83,26 @@ class RelayListener:
         with self._lock:
             return len(self._clients)
 
+    def devices(self) -> list[dict]:
+        """当前已连接设备（按 deviceId 合并同一设备的重复连接）。"""
+        with self._lock:
+            infos = list(self._clients.values())
+        merged: dict[str, dict] = {}
+        for info in infos:
+            item = merged.setdefault(info.get("device_id") or "", {
+                "deviceId": info.get("device_id") or "",
+                "deviceName": info.get("device_name") or "",
+                "remote": info.get("remote") or "",
+                "connectedAt": info.get("connectedAt") or 0,
+                "count": 0,
+            })
+            if not item["deviceName"] and info.get("device_name"):
+                item["deviceName"] = info["device_name"]
+            if info.get("connectedAt") and (not item["connectedAt"] or info["connectedAt"] < item["connectedAt"]):
+                item["connectedAt"] = info["connectedAt"]
+            item["count"] += int(info.get("count") or 0)
+        return sorted(merged.values(), key=lambda e: e["connectedAt"])
+
     def _accept_loop(self):
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -68,16 +112,20 @@ class RelayListener:
             conn, addr = srv.accept()
             threading.Thread(target=self._serve, args=(conn, addr), daemon=True).start()
 
-    def _check_hello(self, line: bytes) -> bool:
+    def _parse_hello(self, line: bytes) -> dict | None:
+        """校验首帧握手；通过时返回连接信息（含设备标识），失败返回 None。"""
         try:
             msg = json.loads(line.decode("utf-8", "replace"))
         except Exception:
-            return False
+            return None
         if not isinstance(msg, dict) or "hello" not in msg:
-            return False
-        if self.token:
-            return hmac.compare_digest(str(msg.get("token") or ""), self.token)
-        return True
+            return None
+        if self.token and not hmac.compare_digest(str(msg.get("token") or ""), self.token):
+            return None
+        return {
+            "device_id": str(msg.get("deviceId") or "").strip(),
+            "device_name": str(msg.get("deviceName") or "").strip(),
+        }
 
     def _serve(self, conn: socket.socket, addr):
         try:
@@ -87,17 +135,28 @@ class RelayListener:
             rbuf = conn.makefile("rb")
 
             first = rbuf.readline(MAX_SOCKET_LINE)
-            if not first or not first.endswith(b"\n") or not self._check_hello(first.strip()):
+            info = self._parse_hello(first.strip()) if (first and first.endswith(b"\n")) else None
+            if info is None:
                 try:
                     conn.sendall(b'{"ok":false,"error":"unauthorized"}\n')
                 except OSError:
                     pass
                 return
-            conn.sendall(b'{"ok":true}\n')
             conn.settimeout(IDLE_TIMEOUT_S)
 
+            info["remote"] = f"{addr[0]}:{addr[1]}" if isinstance(addr, tuple) else str(addr)
+            info["connectedAt"] = int(time.time() * 1000)
+            info["count"] = 0
+            if info["device_id"]:
+                # 记住设备名，网页与 /api/devices 重启后仍能显示
+                try:
+                    self.store.remember_device(info["device_id"], info["device_name"])
+                except Exception:
+                    pass
+            # 先登记再回 ack：客户端收到 ok 时设备已经在 /api/devices 里
             with self._lock:
-                self._clients.add(conn)
+                self._clients[conn] = info
+            conn.sendall(b'{"ok":true}\n')
             try:
                 while True:
                     line = rbuf.readline(MAX_SOCKET_LINE)
@@ -108,10 +167,10 @@ class RelayListener:
                     line = line.strip()
                     if not line:
                         continue
-                    conn.sendall(self._handle_frame(line) + b"\n")
+                    conn.sendall(self._handle_frame(line, info) + b"\n")
             finally:
                 with self._lock:
-                    self._clients.discard(conn)
+                    self._clients.pop(conn, None)
         except (OSError, socket.timeout):
             pass
         finally:
@@ -120,7 +179,8 @@ class RelayListener:
             except OSError:
                 pass
 
-    def _handle_frame(self, line: bytes) -> bytes:
+    def _handle_frame(self, line: bytes, conn: dict | None = None) -> bytes:
+        device_id = str((conn or {}).get("device_id") or "")
         try:
             msg = json.loads(line.decode("utf-8", "replace"))
         except Exception:
@@ -128,12 +188,17 @@ class RelayListener:
         if not isinstance(msg, dict):
             return b'{"ok":false,"error":"invalid frame"}'
         if "ping" in msg or "hello" in msg:
-            return self._ack(downlink=True)
+            return self._ack(downlink=True, device_id=device_id)
         if not msg.get("roomId"):
             return b'{"ok":false,"error":"missing roomId"}'
+        if device_id:
+            # 握手身份优先：同一进程内 payload 可能缺失或过期
+            msg["deviceId"] = device_id
         rec = self.store.add_message(msg)
         if rec is None:
-            return self._ack({"dup": True}, downlink=True)
+            return self._ack({"dup": True}, downlink=True, device_id=device_id)
+        if conn is not None:
+            conn["count"] = int(conn.get("count") or 0) + 1
         if self.agent is not None:
             try:
                 self.agent.enqueue(rec)
@@ -144,15 +209,16 @@ class RelayListener:
                 self.replier.enqueue(rec.get("msg") or msg)
             except Exception:
                 pass
-        return self._ack({"seq": rec["seq"]}, downlink=True)
+        return self._ack({"seq": rec["seq"]}, downlink=True, device_id=device_id)
 
-    def _ack(self, extra: dict | None = None, downlink: bool = False) -> bytes:
-        """构造 ack；模块上行帧的 ack 可顺带携带一条下行发送指令。"""
+    def _ack(self, extra: dict | None = None, downlink: bool = False,
+             device_id: str = "") -> bytes:
+        """构造 ack；模块上行帧的 ack 可顺带携带一条本设备的下行发送指令。"""
         obj = {"ok": True}
         if extra:
             obj.update(extra)
         if downlink:
-            send = self._next_send()
+            send = self._next_send(device_id)
             if send is not None:
                 obj["send"] = send
         # Compact separators so naive clients matching the literal "ok":true still work.

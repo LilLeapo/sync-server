@@ -512,6 +512,7 @@ class QuoteAgent:
             "sender": sender_display(msg),
             "senderId": msg.get("sender") or "",
             "roomName": room_display(msg),
+            "deviceId": str(msg.get("deviceId") or ""),
             "source": message_source(msg),
             "imgFile": rec.get("imgFile"),
             "summary": summary,
@@ -522,6 +523,7 @@ class QuoteAgent:
             row = dict(base)
             if it.get("schemaVersion") == 2:
                 row.update(it)
+            row["deviceId"] = base["deviceId"]  # 模型输出不覆盖设备归属
             for k in ("供应商", "项目", "价格", "单位", "数量", "备注"):
                 row[k] = str(it.get(k) or "")
             condition_note = display_conditions(row)

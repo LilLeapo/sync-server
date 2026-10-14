@@ -26,8 +26,10 @@ MAX_REPLY_CHARS = 1500
 
 class WechatReplier:
     def __init__(self, bridge, send, state_path: str | None = None, *, store=None, quote_log=None):
-        """bridge: PiBridge（需有 begin_session）。send(talker, content) -> bool。
+        """bridge: PiBridge（需有 begin_session）。send(talker, content, device_id) -> bool。
 
+        device_id 为触发本次回复的那台设备：下行只投给它，
+        避免多设备同时监同一个群时由别的设备代发。
         state_path 记住网页开关；缺省文件时默认开启。
         """
         self.bridge = bridge
@@ -95,14 +97,15 @@ class WechatReplier:
         if not text:
             return None
         room = str(msg.get("roomId") or "")
+        device_id = str(msg.get("deviceId") or "")
         try:
-            ok = self.send(room, text)
+            ok = self.send(room, text, device_id)
         except Exception as e:
             print(f"[wechat_reply] send failed room={room}: {e}", file=sys.stderr)
             return None
         if not ok:
             return None
-        print(f"[wechat_reply] queued room={room} chars={len(text)}")
+        print(f"[wechat_reply] queued room={room} device={device_id or '-'} chars={len(text)}")
         return text
 
     @staticmethod

@@ -26,6 +26,11 @@ def safe_name(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", value)
 
 
+def device_id_of(msg: dict | None) -> str:
+    """消息携带的设备标识；旧数据/旧模块没有该字段时为空串。"""
+    return str((msg or {}).get("deviceId") or "").strip()
+
+
 def guess_ext(path: str | None, default: str = "jpg") -> str:
     if path:
         m = EXT_FROM_PATH.search(path)
@@ -107,10 +112,81 @@ class Store:
         self.images_dir = os.path.join(data_dir, "images")
         os.makedirs(self.images_dir, exist_ok=True)
         self.log_path = os.path.join(data_dir, "messages.jsonl")
+        self.devices_path = os.path.join(data_dir, "devices.json")
         self.lock = threading.Lock()
         self.messages: list[dict] = []
         self._recent: dict[tuple, float] = {}  # 去重窗口：key -> 时间戳
+        self._device_names: dict[str, str] = {}  # deviceId -> 显示名（握手登记）
+        self._load_devices()
         self._load()
+
+    # ---------- 设备标识 ----------
+
+    def _load_devices(self):
+        try:
+            with open(self.devices_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            return
+        if isinstance(data, dict):
+            self._device_names = {str(k): str(v) for k, v in data.items()}
+
+    def _save_devices_locked(self):
+        try:
+            tmp = self.devices_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self._device_names, f, ensure_ascii=False, indent=1)
+            os.replace(tmp, self.devices_path)
+        except OSError:
+            pass
+
+    def remember_device(self, device_id: str, device_name: str = "") -> None:
+        """记住设备显示名（socket 握手时调用），落盘后重启仍可显示。
+
+        名字为空时不清掉已有名字：HTTP 兜底上报只有 id、没有名字。
+        """
+        device_id = str(device_id or "").strip()
+        device_name = str(device_name or "").strip()
+        if not device_id:
+            return
+        with self.lock:
+            if self._device_names.get(device_id) == device_name:
+                return
+            if not device_name and self._device_names.get(device_id):
+                return
+            self._device_names[device_id] = device_name
+            self._save_devices_locked()
+
+    def devices(self) -> list[dict]:
+        """按设备聚合：消息数、覆盖群数、最近时间；名称来自握手登记。"""
+        with self.lock:
+            seen: dict[str, dict] = {}
+            for r in self.messages:
+                msg = r["msg"]
+                did = device_id_of(msg)
+                entry = seen.setdefault(
+                    did, {"deviceId": did, "count": 0, "lastAt": 0, "rooms": set()})
+                entry["count"] += 1
+                entry["rooms"].add(msg.get("roomId") or "unknown")
+                t = msg.get("createTime") or r["receivedAt"]
+                if t > entry["lastAt"]:
+                    entry["lastAt"] = t
+            names = dict(self._device_names)
+            out = []
+            for did, entry in seen.items():
+                out.append({
+                    "deviceId": did,
+                    "deviceName": names.get(did, ""),
+                    "count": entry["count"],
+                    "rooms": len(entry["rooms"]),
+                    "lastAt": entry["lastAt"],
+                })
+            # 只有握手、还没上报过消息的设备也列出来（否则刚连上时网页看不到）
+            for did, name in names.items():
+                if did not in seen:
+                    out.append({"deviceId": did, "deviceName": name,
+                                "count": 0, "rooms": 0, "lastAt": 0})
+            return sorted(out, key=lambda e: e["lastAt"], reverse=True)
 
     def _load(self):
         if os.path.exists(self.log_path):
@@ -187,7 +263,10 @@ class Store:
         msg = rec["msg"]
         name = safe_name(str(msg.get("msgSvrId") or "unknown"))
         kind_name = safe_name(str(kind or "img")) or "img"
-        fname = f"{name}_{kind_name}.{ext}"
+        # 同一条消息可能由多台设备各存一份，文件名带设备前缀避免互相覆盖
+        dev = safe_name(device_id_of(msg))
+        prefix = f"{dev}_" if dev else ""
+        fname = f"{prefix}{name}_{kind_name}.{ext}"
         full = os.path.join(self.images_dir, fname)
         try:
             with open(full, "wb") as f:
@@ -201,13 +280,15 @@ class Store:
     def _dedupe_key(msg: dict):
         """同一消息 60s 内的重复投递（socket 重传 / HTTP+socket 双通道）只收一次。
 
-        key 含 imageSize 与是否带图：缩略图/中图/原图是不同记录，官方原图回填
+        key 里带 deviceId：去重只在同一台设备内生效，两台手机各报到一次会各存一份。
+        含 imageSize 与是否带图：缩略图/中图/原图是不同记录，官方原图回填
         与 CDN 原图大小不同也不会互相吞掉。
         """
         svr = msg.get("msgSvrId")
         if not svr:
             return None
         return (
+            device_id_of(msg),
             str(svr),
             str(msg.get("imageKind") or ""),
             str(msg.get("imageSize") or ""),
@@ -250,7 +331,9 @@ class Store:
             return
         msg = rec["msg"]
         name = safe_name(str(msg.get("msgSvrId") or "unknown"))
-        fname = f"{name}_original.jpg"
+        dev = safe_name(device_id_of(msg))
+        prefix = f"{dev}_" if dev else ""
+        fname = f"{prefix}{name}_original.jpg"
         full = os.path.join(self.images_dir, fname)
         try:
             with open(full, "wb") as f:
@@ -273,18 +356,23 @@ class Store:
             for r in self.messages:
                 f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
-    def list_messages(self, after: int = 0, limit: int = 1000):
+    def list_messages(self, after: int = 0, limit: int = 1000, device: str | None = None):
         with self.lock:
-            total = len(self.messages)
+            rows = self.messages
+            if device is not None:
+                rows = [r for r in rows if device_id_of(r.get("msg")) == device]
+            total = len(rows)
             start = max(after, 0)
             end = min(start + limit, total)
-            return self.messages[start:end], total, start
+            return rows[start:end], total, start
 
-    def rooms(self):
+    def rooms(self, device: str | None = None):
         with self.lock:
             seen: dict[str, dict] = {}
             for r in self.messages:
                 msg = r["msg"]
+                if device is not None and device_id_of(msg) != device:
+                    continue
                 rid = msg.get("roomId") or "unknown"
                 entry = seen.setdefault(rid, {"roomId": rid, "count": 0, "lastAt": 0, "roomName": None})
                 entry["count"] += 1
@@ -296,21 +384,28 @@ class Store:
                     entry["lastAt"] = t
             return sorted(seen.values(), key=lambda e: e["lastAt"], reverse=True)
 
-    def stats(self):
+    def stats(self, device: str | None = None):
         with self.lock:
-            images = sum(1 for r in self.messages if r.get("imgFile"))
-            return {"count": len(self.messages), "images": images}
+            rows = self.messages
+            if device is not None:
+                rows = [r for r in rows if device_id_of(r.get("msg")) == device]
+            images = sum(1 for r in rows if r.get("imgFile"))
+            return {"count": len(rows), "images": images}
 
-    def clear(self, room_id: str | None = None):
+    def clear(self, room_id: str | None = None, device: str | None = None):
+        """清空消息；room_id / device 可单独或组合限定范围，缺省清全部。"""
         with self.lock:
             removed = []
-            if room_id:
+            if room_id or device is not None:
                 kept = []
                 for r in self.messages:
-                    if r["msg"].get("roomId") == room_id:
-                        removed.append(r)
-                    else:
+                    msg = r["msg"]
+                    if room_id and msg.get("roomId") != room_id:
                         kept.append(r)
+                    elif device is not None and device_id_of(msg) != device:
+                        kept.append(r)
+                    else:
+                        removed.append(r)
                 self.messages = kept
             else:
                 removed = self.messages
@@ -378,12 +473,15 @@ class QuoteLog:
             if isinstance(row, dict) and "qseq" in row:
                 self.rows.append(row)
 
-    def list(self, after: int = 0, limit: int = 500, room: str | None = None):
+    def list(self, after: int = 0, limit: int = 500, room: str | None = None,
+             device: str | None = None):
         with self.lock:
             self._reload_locked()
             rows = self.rows
             if room:
                 rows = [r for r in rows if r.get("roomId") == room]
+            if device is not None:
+                rows = [r for r in rows if str(r.get("deviceId") or "") == device]
             total = rows[-1]["qseq"] if rows else 0
             fresh = [r for r in rows if r["qseq"] > after][:limit]
             return fresh, total

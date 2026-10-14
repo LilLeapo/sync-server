@@ -49,7 +49,7 @@ class TestWechatReply(unittest.TestCase):
     def setUp(self):
         self.sent = []
         self.bridge = _Bridge("好的，我在")
-        self.replier = WechatReplier(self.bridge, lambda t, c: self.sent.append((t, c)) or True)
+        self.replier = WechatReplier(self.bridge, lambda t, c, d="": self.sent.append((t, c)) or True)
 
     def test_at_me_in_group_replies(self):
         out = self.replier.handle(_msg())

@@ -19,7 +19,7 @@ from urllib.parse import parse_qs
 
 try:
     from .relay import RelayListener
-    from .store import Store, QuoteLog
+    from .store import Store, QuoteLog, device_id_of
     from . import quote_agent, pi_bridge, bot_plugins, wechat_reply
     from . import feishu as feishu_mod
     from . import dingtalk as dingtalk_mod
@@ -28,7 +28,7 @@ try:
 except ImportError:  # 允许 python3 server/sync_server.py 直接运行
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from server.relay import RelayListener
-    from server.store import Store, QuoteLog
+    from server.store import Store, QuoteLog, device_id_of
     from server import quote_agent, pi_bridge, bot_plugins, wechat_reply
     from server import feishu as feishu_mod
     from server import dingtalk as dingtalk_mod
@@ -87,7 +87,10 @@ class Handler(BaseHTTPRequestHandler):
         return self.rfile.read()
 
     def _params(self) -> dict:
-        return {k: v[0] for k, v in parse_qs(self.path.split("?", 1)[1] if "?" in self.path else "").items()}
+        # keep_blank_values：`?device=` 表示「无设备标识的历史消息」，与「不筛选」区分
+        return {k: v[0] for k, v in parse_qs(
+            self.path.split("?", 1)[1] if "?" in self.path else "",
+            keep_blank_values=True).items()}
 
     def _handle_post(self):
         store = self.server.store
@@ -136,10 +139,13 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             limit = 1000
         room = params.get("room") or None
+        device = params.get("device")
         qtext = params.get("q") or ""
         msgs, total, start = store.list_messages(after, limit)
         if room:
             msgs = [r for r in msgs if r["msg"].get("roomId") == room]
+        if device is not None:
+            msgs = [r for r in msgs if device_id_of(r.get("msg")) == device]
         if qtext:
             needle = qtext.lower()
             msgs = [r for r in msgs if needle in (r["msg"].get("content") or "").lower()]
@@ -151,6 +157,7 @@ class Handler(BaseHTTPRequestHandler):
             if isinstance(r.get("msg"), dict)
             and r["msg"].get("type") == 3
             and r["msg"].get("imageKind") == "original"
+            and (device is None or device_id_of(r.get("msg")) == device)
         }
         PENDING_ORIGINAL_MS = 120_000  # 手机下载/上传原图通常几十秒内完成
         slim = []
@@ -178,7 +185,32 @@ class Handler(BaseHTTPRequestHandler):
         self._json(200, {"ok": True, "total": total, "start": start, "messages": slim})
 
     def _handle_rooms(self):
-        self._json(200, {"ok": True, "rooms": self.server.store.rooms()})
+        device = self._params().get("device")
+        self._json(200, {"ok": True, "rooms": self.server.store.rooms(device)})
+
+    def _handle_devices(self):
+        """设备列表：消息统计（落盘聚合）+ 当前连接状态（握手登记）。"""
+        store = self.server.store
+        known = store.devices()
+        by_id = {d["deviceId"]: d for d in known}
+        listener = getattr(self.server, "relay_listener", None)
+        for online in (listener.devices() if listener is not None else []):
+            did = online.get("deviceId") or ""
+            item = by_id.get(did)
+            if item is None:
+                item = {"deviceId": did, "deviceName": online.get("deviceName") or "",
+                        "count": 0, "rooms": 0, "lastAt": 0}
+                known.append(item)
+                by_id[did] = item
+            if not item.get("deviceName") and online.get("deviceName"):
+                item["deviceName"] = online["deviceName"]
+            item["online"] = True
+            item["remote"] = online.get("remote") or ""
+            item["connectedAt"] = online.get("connectedAt") or 0
+        for item in known:
+            item.setdefault("online", False)
+        self._json(200, {"ok": True, "devices": known,
+                         "online": sum(1 for d in known if d.get("online"))})
 
     def _reply_view(self) -> dict:
         replier = getattr(self.server, "wechat_replier", None)
@@ -189,9 +221,11 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_stats(self):
         listener = getattr(self.server, "relay_listener", None)
         clients = listener.client_count() if listener else 0
+        devices = self.server.store.devices()
         reply = self._reply_view()
         self._json(200, {
             "ok": True, **self.server.store.stats(), "socketClients": clients,
+            "deviceCount": len(devices),
             "replyAvailable": reply["available"], "replyEnabled": reply["enabled"],
         })
 
@@ -226,12 +260,14 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             limit = 500
         room = params.get("room") or None
-        rows, total = self.server.quote_log.list(after, limit, room)
+        device = params.get("device")
+        rows, total = self.server.quote_log.list(after, limit, room, device)
         self._json(200, {"ok": True, "total": total, "quotes": rows})
 
     def _handle_clear(self):
         params = self._params()
-        count = self.server.store.clear(params.get("room") or None)
+        device = params.get("device")
+        count = self.server.store.clear(params.get("room") or None, device)
         agent = getattr(self.server, "agent", None)
         if agent is not None:
             # 消息清空后 seq 重新计数，重置去重状态防止新消息被误判已处理
@@ -346,6 +382,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/rooms":
             if self._require_auth():
                 self._handle_rooms()
+        elif path == "/api/devices":
+            if self._require_auth():
+                self._handle_devices()
         elif path == "/api/stats":
             if self._require_auth():
                 self._handle_stats()
@@ -419,11 +458,13 @@ class Handler(BaseHTTPRequestHandler):
             return
         talker = str(msg.get("talker") or "").strip()
         content = str(msg.get("content") or "")
+        device = str(msg.get("device") or "").strip()
         if not talker or not content:
             self._json(400, {"ok": False, "error": "missing talker/content"})
             return
-        listener.send(talker, content)
-        self._json(200, {"ok": True, "queued": True, "clients": listener.client_count()})
+        listener.send(talker, content, device or None)
+        self._json(200, {"ok": True, "queued": True, "device": device,
+                         "clients": listener.client_count()})
 
     def log_message(self, fmt, *args):
         pass
@@ -518,11 +559,11 @@ def main():
         args.agent_config, args.data_dir,
         on_quote=on_quote or None, bridge=bridge)
 
-    def _downlink(talker: str, content: str) -> bool:
+    def _downlink(talker: str, content: str, device_id: str = "") -> bool:
         listener = getattr(server, "relay_listener", None)
         if listener is None:
             return False
-        return listener.send(talker, content)
+        return listener.send(talker, content, device_id or None)
 
     server.wechat_replier = (
         wechat_reply.WechatReplier(

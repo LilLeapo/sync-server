@@ -134,6 +134,52 @@
   }
   .side-foot span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+  /* ---------- 设备筛选 ---------- */
+  .side-devices { padding: 4px 14px 11px; border-bottom: 1px solid var(--line); }
+  .side-devices__head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin: 4px 0 8px;
+    font: 600 10px var(--mono);
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+  }
+  .device-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    max-height: 112px;
+    overflow-y: auto;
+  }
+  .device {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 100%;
+    padding: 4px 9px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--card);
+    color: var(--ink);
+    font: 11px var(--mono);
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .device:hover { background: var(--chip); }
+  .device.active {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent-ink);
+    font-weight: 600;
+  }
+  .device__dot { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); flex: 0 0 auto; }
+  .device__dot.on { background: var(--accent); }
+  .device__name { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .device__count { font-size: 10px; color: var(--muted); }
+  .device.active .device__count { color: var(--accent-ink); }
+
   /* ---------- 主区 ---------- */
   .main { display: flex; flex-direction: column; min-height: 0; position: relative; }
   .bar {
@@ -254,6 +300,17 @@
   .row__roomid {
     font: 10px var(--mono);
     color: var(--faint);
+  }
+  .row__device {
+    padding: 0 6px;
+    border-radius: 4px;
+    background: var(--accent-soft);
+    color: var(--accent-ink);
+    font-size: 10px;
+    max-width: 130px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .bubble {
@@ -614,6 +671,13 @@
     <div class="side-search">
       <input id="search" type="search" placeholder="搜索消息内容…" autocomplete="off" />
     </div>
+    <div class="side-devices">
+      <div class="side-devices__head">
+        <span>设备</span>
+        <span id="deviceHead">—</span>
+      </div>
+      <div class="device-list" id="deviceList"></div>
+    </div>
     <nav class="rooms" id="roomList"></nav>
     <div class="side-foot">
       <span id="footStats">—</span>
@@ -701,8 +765,10 @@
   const state = {
     messages: [],          // 已加载记录（按 seq 升序）
     bySeq: new Map(),
-    imgBySvr: new Map(),   // msgSvrId -> { best, thumb }
+    imgBySvr: new Map(),   // "deviceId\0msgSvrId" -> { best, thumb }
     rooms: [],
+    devices: [],           // /api/devices：设备列表（含在线状态）
+    selectedDevice: null,  // null = 全部设备；"" = 无设备标识的历史消息
     selectedRoom: null,    // null = 全部群聊
     search: "",
     firstSeq: null,        // 已加载的最小 seq（>1 说明还有更早的）
@@ -723,6 +789,7 @@
   const $ = (sel) => document.querySelector(sel);
   const feed = $("#feed");
   const roomList = $("#roomList");
+  const deviceList = $("#deviceList");
 
   /* ---------- 工具 ---------- */
 
@@ -789,6 +856,27 @@
     return Number(rec.msg && rec.msg.type) === 3;
   }
 
+  /* ---------- 设备 ---------- */
+
+  // 消息所属设备；旧数据/旧模块没有该字段时归为空串（“未标识”）
+  function deviceIdOf(rec) {
+    const m = (rec && rec.msg) || {};
+    return m.deviceId == null ? "" : String(m.deviceId);
+  }
+  function deviceLabel(id) {
+    if (id === "") return "未标识";
+    const d = state.devices.find((x) => x.deviceId === id);
+    if (d && d.deviceName) return d.deviceName;
+    return id.length > 14 ? id.slice(0, 6) + "…" + id.slice(-4) : id;
+  }
+  function deviceMatches(rec) {
+    return state.selectedDevice === null || deviceIdOf(rec) === state.selectedDevice;
+  }
+  // 图片择优的键必须带设备：两台手机抓同一条消息时各自保留自己那份
+  function imgKey(rec) {
+    return deviceIdOf(rec) + "\u0000" + String(rec.msg.msgSvrId || "");
+  }
+
   /* ---------- 图片择优（同一 msgSvrId 多条记录取最佳） ---------- */
 
   function kindScore(rec) {
@@ -821,10 +909,11 @@
     if (!isImage(rec)) return;
     const svr = rec.msg.msgSvrId;
     if (!svr) return;
-    let entry = state.imgBySvr.get(svr);
+    const key = imgKey(rec);
+    let entry = state.imgBySvr.get(key);
     if (!entry) {
       entry = { best: rec, thumb: null };
-      state.imgBySvr.set(svr, entry);
+      state.imgBySvr.set(key, entry);
     } else if (betterThan(rec, entry.best)) {
       entry.best = rec;
     }
@@ -867,6 +956,7 @@
   async function initialLoad() {
     const stats = await api("/api/stats");
     state.total = stats.count || 0;
+    state.devices = (await api("/api/devices")).devices || [];
     updateFoot(stats);
     const after = Math.max(0, state.total - PAGE);
     const data = await api("/api/messages?after=" + after + "&limit=" + (PAGE + POLL_LIMIT));
@@ -877,7 +967,7 @@
     state.lastSeq = data.start + (data.messages || []).length;
     state.firstSeq = state.messages.length ? state.messages[0].seq : null;
     // 打开页面时历史消息视为已读，未读角标只统计之后新到的
-    state.rooms = (await api("/api/rooms")).rooms || [];
+    state.rooms = (await api(roomsUrl())).rooms || [];
     for (const r of state.rooms) state.lastSeen[r.roomId] = state.lastSeq;
     renderAll();
   }
@@ -902,9 +992,11 @@
       }
       if (++state.polls % ROOMS_EVERY === 0) {
         try {
-          state.rooms = (await api("/api/rooms")).rooms || [];
+          state.rooms = (await api(roomsUrl())).rooms || [];
+          state.devices = (await api("/api/devices")).devices || [];
           updateFoot(await api("/api/stats"));
           renderRooms();
+          renderDevices();
         } catch (e) { /* 房间刷新失败不影响主流程 */ }
       }
       try {
@@ -948,6 +1040,7 @@
   function visibleMessages() {
     let list = state.messages;
     if (state.selectedRoom) list = list.filter((r) => r.msg.roomId === state.selectedRoom);
+    if (state.selectedDevice !== null) list = list.filter(deviceMatches);
     if (state.search) {
       const q = state.search.toLowerCase();
       list = list.filter((r) =>
@@ -959,8 +1052,62 @@
   }
 
   function renderAll() {
+    renderDevices();
     renderRooms();
     renderFeed();
+  }
+
+  /* ---------- 设备列表 ---------- */
+
+  // 房间统计需要跟着设备筛选走，否则选了一台手机侧边栏仍是全局计数
+  function roomsUrl() {
+    return state.selectedDevice === null
+      ? "/api/rooms"
+      : "/api/rooms?device=" + encodeURIComponent(state.selectedDevice);
+  }
+
+  function renderDevices() {
+    const total = state.devices.reduce((n, d) => n + (d.count || 0), 0);
+    const online = state.devices.filter((d) => d.online).length;
+    $("#deviceHead").textContent = state.devices.length
+      ? state.devices.length + " 台 · 在线 " + online
+      : "—";
+    const items = [{ deviceId: null, label: "全部设备", count: total, online: online > 0 }].concat(
+      state.devices.map((d) => ({
+        deviceId: d.deviceId == null ? "" : String(d.deviceId),
+        label: deviceLabel(d.deviceId == null ? "" : String(d.deviceId)),
+        title: (d.deviceName ? d.deviceName + "\n" : "") + (d.deviceId || "无设备标识（升级前数据）") +
+          (d.remote ? "\n" + d.remote : ""),
+        count: d.count || 0,
+        online: !!d.online,
+      })));
+    deviceList.innerHTML = items.map((item) => {
+      const active = state.selectedDevice === item.deviceId ? " active" : "";
+      const value = item.deviceId == null ? "" : item.deviceId;
+      return (
+        '<button class="device' + active + '" data-device="' + escapeHtml(value) + '"' +
+        ' data-all="' + (item.deviceId == null ? "1" : "0") + '"' +
+        ' title="' + escapeHtml(item.title || item.label) + '">' +
+        '<span class="device__dot' + (item.online ? " on" : "") + '"></span>' +
+        '<span class="device__name">' + escapeHtml(item.label) + "</span>" +
+        '<span class="device__count">' + item.count + "</span>" +
+        "</button>"
+      );
+    }).join("");
+  }
+
+  async function selectDevice(id) {
+    state.selectedDevice = id;
+    state.lastSeen = {};
+    try {
+      state.rooms = (await api(roomsUrl())).rooms || [];
+    } catch (e) { /* 保留旧房间列表，不至于白屏 */ }
+    if (state.selectedRoom && !state.rooms.some((r) => r.roomId === state.selectedRoom)) {
+      state.selectedRoom = null;  // 这台设备没有监听到该群
+    }
+    for (const r of state.rooms) state.lastSeen[r.roomId] = state.lastSeq;
+    closeSidebar();
+    renderAll();
   }
 
   function renderFeed() {
@@ -972,7 +1119,7 @@
     const room = state.rooms.find((r) => r.roomId === state.selectedRoom);
     const roomTitle = state.selectedRoom
       ? (room ? shortRoomName(room) : shortRoom(state.selectedRoom))
-      : "全部群聊";
+      : (state.selectedDevice !== null ? deviceLabel(state.selectedDevice) : "全部群聊");
     $("#roomTitle").textContent = roomTitle;
     $("#roomCount").textContent = list.length + " 条消息";
 
@@ -994,8 +1141,10 @@
       if (isImage(rec)) {
         const svr = rec.msg.msgSvrId;
         if (svr) {
-          if (seenSvr.has(svr)) continue;
-          seenSvr.add(svr);
+          // 同一条图片可能被多台设备各抓到一次，按「设备+msgSvrId」各自展示
+          const key = imgKey(rec);
+          if (seenSvr.has(key)) continue;
+          seenSvr.add(key);
         }
       }
       const t = rec.msg.createTime || rec.receivedAt;
@@ -1019,6 +1168,11 @@
       ? ""
       : '<span class="row__room">' + escapeHtml(roomLabel(rec)) + "</span>" +
         (m.roomName && m.roomId ? '<span class="row__roomid" title="' + escapeHtml(m.roomId) + '">' + escapeHtml(shortRoom(m.roomId)) + "</span>" : "");
+    // 看全部设备时标出每条消息来自哪台手机，选中某台后就无需重复
+    const dev = deviceIdOf(rec);
+    const devTag = state.selectedDevice !== null
+      ? ""
+      : '<span class="row__device" title="' + escapeHtml(dev || "无设备标识（升级前数据）") + '">' + escapeHtml(deviceLabel(dev)) + "</span>";
     // 头像用稳定的 wxid，保证同一个人在不同群里颜色/字母一致；
     // 标题（hover）在显示名与 wxid 不同时给出真实 ID。
     const senderTitle = sender !== senderId ? ' title="' + escapeHtml(senderId) + '"' : "";
@@ -1029,6 +1183,7 @@
       '<div class="row__meta">' +
       '<span class="row__sender"' + senderTitle + '>' + escapeHtml(sender) + "</span>" +
       '<span title="' + escapeHtml(new Date(t).toLocaleString()) + '">' + fmtTime(t) + "</span>" +
+      devTag +
       roomTag +
       "</div>" +
       bodyHtml(rec) +
@@ -1062,7 +1217,7 @@
 
   function imageCardHtml(rec) {
     const svr = rec.msg.msgSvrId;
-    const entry = svr ? state.imgBySvr.get(svr) : null;
+    const entry = svr ? state.imgBySvr.get(imgKey(rec)) : null;
     const best = (entry && entry.best) || rec;
     const src = best.imgFile ? localUrl("/" + best.imgFile) : best.msg.cdnUrl || "";
     const kind = best.msg.imageKind || "full";
@@ -1072,7 +1227,7 @@
     let inner;
     if (src) {
       inner = '<img class="msg-img' + (pending ? " img-pending" : "") + '" loading="lazy" alt="图片" src="' + escapeHtml(src) + '"' +
-        (svr ? ' data-svr="' + escapeHtml(String(svr)) + '"' : "") + " />";
+        (svr ? ' data-img-key="' + escapeHtml(imgKey(rec)) + '"' : "") + " />";
     } else {
       inner = '<div class="img-missing">图片未随消息上传</div>';
     }
@@ -1181,6 +1336,9 @@
   function visibleQuotes() {
     let list = state.quotes;
     if (state.selectedRoom) list = list.filter((r) => r.roomId === state.selectedRoom);
+    if (state.selectedDevice !== null) {
+      list = list.filter((r) => (r.deviceId == null ? "" : String(r.deviceId)) === state.selectedDevice);
+    }
     if (state.search) {
       const q = state.search.toLowerCase();
       list = list.filter((r) => quoteSearchText(r).toLowerCase().includes(q));
@@ -1386,7 +1544,11 @@
   }
 
   function renderRooms() {
-    let html = roomItemHtml(null, "全部群聊", state.total, unreadFor(null));
+    // 选中设备时「全部群聊」的总数取设备自己的统计
+    const total = state.selectedDevice === null
+      ? state.total
+      : state.rooms.reduce((n, r) => n + (r.count || 0), 0);
+    let html = roomItemHtml(null, "全部群聊", total, unreadFor(null));
     for (const room of state.rooms) {
       html += roomItemHtml(room.roomId, shortRoomName(room), room.count, unreadFor(room.roomId), room.roomName);
     }
@@ -1409,12 +1571,14 @@
     let n = 0;
     if (roomId == null) {
       for (const rec of state.messages) {
+        if (!deviceMatches(rec)) continue;
         if (rec.seq > (state.lastSeen[rec.msg.roomId] || 0)) n++;
       }
       return n;
     }
     const seen = state.lastSeen[roomId] || 0;
     for (const rec of state.messages) {
+      if (!deviceMatches(rec)) continue;
       if (rec.msg.roomId === roomId && rec.seq > seen) n++;
     }
     return n;
@@ -1450,17 +1614,20 @@
     }
     btn.disabled = true;
     status.className = "composer__status";
-    status.textContent = "已入队，等待手机端取走…";
+    const targetDevice = state.selectedDevice ? state.selectedDevice : "";
+    status.textContent = targetDevice
+      ? "已入队（定向设备 " + deviceLabel(targetDevice) + "），等待手机端取走…"
+      : "已入队，等待手机端取走…";
     try {
       const resp = await api("/api/send", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ talker: to, content: text }),
+        body: JSON.stringify({ talker: to, content: text, device: targetDevice }),
       });
       const clients = resp.clients || 0;
       status.className = "composer__status ok";
       status.textContent = clients > 0
-        ? "已入队（手机 socket 在线，下次上行/心跳取走）"
+        ? (targetDevice ? "已定向到设备 " + deviceLabel(targetDevice) + "，下次上行/心跳取走" : "已入队（手机 socket 在线，下次上行/心跳取走）")
         : "已入队，但手机 socket 未连接，可能收不到";
       $("#sendText").value = "";
     } catch (e) {
@@ -1474,7 +1641,9 @@
   function updateFoot(stats) {
     if (stats) {
       state.stats = stats;
-      $("#footStats").textContent = (stats.count || 0) + " 条 · 图片 " + (stats.images || 0) + " 张";
+      const dev = stats.deviceCount ? " · 设备 " + stats.deviceCount : "";
+      $("#footStats").textContent =
+        (stats.count || 0) + " 条 · 图片 " + (stats.images || 0) + " 张" + dev;
       if (state.online) setOnline(true); // socketClients 变化时刷新状态行
       applyReply(stats);
     }
@@ -1584,12 +1753,18 @@
   }
 
   async function doClear() {
-    const scope = state.selectedRoom
-      ? "「" + (shortRoomName(state.rooms.find((r) => r.roomId === state.selectedRoom)) || shortRoom(state.selectedRoom)) + "」"
-      : "全部群聊";
+    const roomName = state.selectedRoom
+      ? (shortRoomName(state.rooms.find((r) => r.roomId === state.selectedRoom)) || shortRoom(state.selectedRoom))
+      : null;
+    const scope = [
+      state.selectedDevice !== null ? "设备「" + deviceLabel(state.selectedDevice) + "」" : null,
+      roomName ? "「" + roomName + "」" : null,
+    ].filter(Boolean).join(" ") || "全部群聊";
     if (!window.confirm("确定清空" + scope + "的捕获记录？此操作不可恢复。")) return;
-    const q = state.selectedRoom ? "?room=" + encodeURIComponent(state.selectedRoom) : "";
-    await api("/api/clear" + q, { method: "POST" });
+    const parts = [];
+    if (state.selectedRoom) parts.push("room=" + encodeURIComponent(state.selectedRoom));
+    if (state.selectedDevice !== null) parts.push("device=" + encodeURIComponent(state.selectedDevice));
+    await api("/api/clear" + (parts.length ? "?" + parts.join("&") : ""), { method: "POST" });
     state.lastSeen = {};
     await initialLoad();
   }
@@ -1609,6 +1784,14 @@
     const btn = e.target.closest(".room");
     if (!btn) return;
     selectRoom(btn.dataset.room || null);
+  });
+
+  deviceList.addEventListener("click", (e) => {
+    const btn = e.target.closest(".device");
+    if (!btn) return;
+    const id = btn.dataset.all === "1" ? null : (btn.dataset.device || "");
+    if (id === state.selectedDevice) return;
+    selectDevice(id);
   });
 
   feed.addEventListener("click", (e) => {
@@ -1632,8 +1815,8 @@
   feed.addEventListener("error", (e) => {
     const img = e.target;
     if (!(img instanceof HTMLImageElement) || !img.classList.contains("msg-img")) return;
-    const svr = img.dataset.svr;
-    const entry = svr ? state.imgBySvr.get(svr) : null;
+    const imgKeyAttr = img.dataset.imgKey;
+    const entry = imgKeyAttr ? state.imgBySvr.get(imgKeyAttr) : null;
     if (entry && entry.thumb && !img.dataset.fellBack) {
       img.dataset.fellBack = "1";
       img.src = localUrl("/" + entry.thumb.imgFile);

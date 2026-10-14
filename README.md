@@ -13,7 +13,8 @@ WABTest 手机模块 ──TCP/HTTP──▶ sync-server ──报价 Agent(pi-a
 
 ## 功能
 
-- **TCP 长连接接收**（NDJSON 协议，默认 8081）：hello 握手（可选 token 鉴权）、逐条 ack、30s 心跳、60s 重复投递去重
+- **TCP 长连接接收**（NDJSON 协议，默认 8081）：hello 握手（可选 token 鉴权 + 设备标识）、逐条 ack、30s 心跳、60s 重复投递去重**（按设备分开，同一条消息由多台手机各报一次会各存一份）**
+- **多设备分开收取**：模块在握手帧带 `deviceId` / `deviceName`（按「微信 wxid + ANDROID_ID」派生，可在模块设置页覆盖），HTTP 兜底上报带 `payload.deviceId`；服务端按设备分别落库/去重/统计，网页可按设备筛选与定向发送，`/api/devices` 列出设备及在线状态
 - **HTTP 兜底上报**（`POST /`，与 socket 同一消息格式）
 - **网页前端**（默认 8080）：实时消息流、房间分组/未读、搜索高亮、图片灯箱、导出/清空、「报价」视图（按 `供应商地区 / 供应商名称（简称） / 品类·品质 / 价格 / 调价历史记录` 五列展示；行悬停可见时间、发送人、群聊、来源、备注、原文证据与疑点）
 - **报价 Agent**：文本消息优先走 **pi-agent SDK 桥**（`pi_agent` 的 Agent 运行时），图片走 OpenAI 兼容视觉模型；按群分文件写 Markdown（`data/quotes/<roomId>.md`）+ 结构化 `quotes.jsonl`
@@ -156,9 +157,20 @@ systemctl restart wabtest-sync
   "msgSvrId": 1234567890123456789,
   "atMe": false,
   "atAll": false,
-  "atUserList": "wxid_a,wxid_b"
+  "atUserList": "wxid_a,wxid_b",
+  "deviceId": "wxid_fosies3z4gse22-9f2c1ab34de56f78"
 }
 ```
+
+`deviceId` 由模块派生（见「多设备分开收取」一节）。socket 连接下以握手帧的身份为准（服务端会用它覆盖 payload），HTTP 兜底则用 payload 里的值；缺失时归入「未标识」，不影响展示。
+
+握手帧（首帧，`deviceId` / `deviceName` 可选）：
+
+```json
+{"hello":"wabsync/1","token":"...","deviceId":"wxid_xxx-9f2c1ab34de56f78","deviceName":"小米 14"}
+```
+
+设备名会记到 `data/devices.json`，重启后仍能显示；留空时模块按「厂商 + 机型」自动派生。
 
 `atMe` 为真表示这条群消息 @ 了模块所在微信号（含 @所有人）。配置了 Agent（`agent.config.json`）后，服务端只对「群聊 + `atMe` + 文本」调用 Agent 生成回复，经下行队列发回该群；私聊和没被 @ 的群消息不会自动回复。网页顶栏「回复开 / 回复关」可随时关掉，状态写在 `data/reply_switch.json`，重启后仍有效。
 
@@ -183,7 +195,7 @@ systemctl restart wabtest-sync
 - 微信群被@问答、飞书、钉钉、企业微信和iLink共享 `server/qa_tools.py`，提供 `search_quotes` / `latest_quotes` / `room_stats` / `current_quotes` / `compare_quotes` / `quote_history` / `quote_evidence`；pi SDK和HTTP后端均可执行工具调用，HTTP每轮最多6次工具调用回合。
 - `compare_quotes` 按目的地或自提地、品质、交期、税票及数量要求返回组内排序、待确认和不符合要求的方案。不同产品、品牌、品质、交期、付款及税票条件分组，不作全局最低价排名。默认比较时点为现在、报价最大年龄24小时；历史分析指定 `as_of`（ISO时间）重放该时点的原始报价状态，`max_age_hours` 最大720小时。明确“发货”期限不能当“到货”期限，车数不自动转换吨数。库存或主体补充不刷新原报价的价格时间。
 - 本服务没有联网基准行情源。期货/现货均价换算需要调用方提供有出处的 `benchmark`（`name`, `contract`, `price`, `at`, `source`），时间在比较时点前5分钟内且基准和合约一致；否则输出待确认。未确认库存、单位、税务口径或运费不参与确定成本排序。
-- 输出：`data/quotes/<roomId>.md`、`data/quotes/quotes.jsonl`（兼容原展示字段并保留结构化条件）、`data/quotes/events.jsonl`（追加事件及证据，当前状态可重放）、`data/quotes/state.json`、`data/feishu|dingtalk|wecom|ilink/bot.log`、`data/*/push_state.json`、`data/ilink/state.json`。模型失败不标记消息已处理，可重新投递重试。
+- 输出：`data/quotes/<roomId>.md`、`data/quotes/quotes.jsonl`（兼容原展示字段并保留结构化条件）、`data/quotes/events.jsonl`（追加事件及证据，当前状态可重放）、`data/quotes/state.json`、`data/feishu|dingtalk|wecom|ilink/bot.log`、`data/*/push_state.json`、`data/ilink/state.json`、`data/devices.json`（设备名登记）。模型失败不标记消息已处理，可重新投递重试。
 - 旧六字段记录保留在原报价视图中；分析工具使用新事件库。「报价」视图的供应商地区取 `details.pickup_region / destination`，价格按 `details.pricing` 显示为固定数字（`amount`）或升贴水（`基准+premium`），调价历史由 `calculation.previousQuoteId` 回溯成链；没有对应字段的列显示为 `—`，不推断补全。需要分析历史时，在停止服务接收消息后显式运行 `python3 -m server.quote_agent --backfill`，会调用配置模型。回填与实时处理共用规则，先写暂存目录，全部成功才替换输出；任何模型提取失败都保留旧输出。不在运行中的服务旁并发执行回填。
 
 ## 插件开发
@@ -232,7 +244,7 @@ def register(api):
 |---|---|---|
 | GET | `/ping` | 健康检查（不鉴权） |
 | POST | `/feishu/event` | 飞书事件回调（走飞书签名/Token 校验，不走本服务 token） |
-| GET | `/api/stats` | 消息数/图片数/`socketClients` |
+| GET | `/api/stats` | 消息数/图片数/`socketClients`/`deviceCount` |
 | GET | `/api/feishu` | 飞书机器人状态（push 模式/问答/Agent 后端/已推送数） |
 | GET | `/api/dingtalk` | 钉钉机器人状态（push 模式/Stream 连接/问答/已推送数） |
 | GET | `/api/wecom` | 企业微信机器人状态（长连接/目标会话/问答/Agent/已推送数） |
@@ -240,14 +252,27 @@ def register(api):
 | GET | `/api/ilink/login` | iLink 扫码登录状态（状态/二维码内容/错误/账号） |
 | POST | `/api/ilink/login` | 发起 iLink 扫码登录（无请求体） |
 | GET | `/api/ilink/qr` | 当前登录二维码（`image/svg+xml`，供网页 `<img>` 展示） |
-| GET | `/api/rooms` | 群聊列表 |
-| GET | `/api/messages?after=0&limit=1000&room=&q=` | 消息列表（响应不含 imageBase64） |
-| GET | `/api/quotes?after=0&limit=500&room=` | 报价条目（按 qseq 增量） |
-| POST | `/api/clear?room=` | 清空消息 |
+| GET | `/api/devices` | 设备列表（`deviceId` / `deviceName` / 消息数 / 群数 / `online` / 来源地址） |
+| GET | `/api/rooms` | 群聊列表（`?device=` 限定设备） |
+| GET | `/api/messages?after=0&limit=1000&room=&q=&device=` | 消息列表（响应不含 imageBase64） |
+| GET | `/api/quotes?after=0&limit=500&room=&device=` | 报价条目（按 qseq 增量） |
+| POST | `/api/clear?room=&device=` | 清空消息 |
 | GET | `/images/<file>` | 图片文件 |
 | POST | `/` | 模块 HTTP 兜底上报 |
+| POST | `/api/send` | 下发发送指令，body 可带 `device` 定向到某台设备 |
 
-启用 token 后，除 `/ping`、`/feishu/event` 与静态页面外均需 `Authorization: Bearer <token>` 或 `?token=` 查询参数。
+启用 token 后，除 `/ping`、`/feishu/event` 与静态页面外均需 `Authorization: Bearer <token>` 或 `?token=` 查询参数；`?device=` 为空串表示只看「未标识」的历史消息，不带该参数则不筛选。
+
+## 多设备分开收取
+
+多台手机（或多个微信号）可以同时连同一个服务，服务端按设备分开处理：
+
+- 握手帧带 `deviceId` / `deviceName`：该连接上报的消息都打上 `deviceId`，落盘记录自带来源；图片文件名也带设备前缀，避免两台手机抓同一条消息时互相覆盖。
+- 去重窗口的 key 是 `(deviceId, msgSvrId, imageKind, imageSize, 是否带图)`：同一台手机重复投递仍只收一次，但两台手机各报一次会各存一份。
+- 报价提取与「被 @ 自动回复」仍按 `msgSvrId` 全局去重，因此多设备重复上报**不会**让报价提取两次或回两条消息；自动回复会定向发给「抓到这条 @ 消息的那台设备」。
+- 网页侧边栏顶部是设备列表（在线点、消息数）；选中某台设备后，消息流、群列表计数、报价表、清空都只看该设备；「全部设备」时每条消息标出来源设备。
+- 发送框在选中设备后会把指令定向到该设备（`/api/send` 的 `device` 字段 + ack 里的 `send.deviceId`，模块端会二次校验）；不选设备则维持原行为（谁先取谁发）。
+- 升级前的历史消息没有 `deviceId`，归入「未标识」一组，不影响原有展示与统计。
 
 ## 飞书事件安全说明
 
