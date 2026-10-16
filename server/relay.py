@@ -51,16 +51,21 @@ class RelayListener:
         # on_send_status(send_id, status, device_id)：status 为 delivered（被模块取走）/ dropped
         self.on_send_status = None
 
-    def send(self, talker: str, content: str, device_id: str | None = None) -> str:
+    def send(self, talker: str, content: str, device_id: str | None = None,
+             image_path: str | None = None) -> str:
         """下发一条发送指令；入队成功返回指令 id，失败返回空串（后续由模块 ack 时取走）。
 
+        image_path 非空时下发图片发送指令（模块走 SendImgProxyUI 相册链路），content 可为空。
         device_id 非空时只投给该设备（指令带 deviceId，模块端也会二次校验）。
         以 "_" 开头的字段是服务端内部记录，下发前去掉。
         """
-        if not talker or not content:
+        image_path = (image_path or "").strip()
+        if not talker or (not content and not image_path):
             return ""
         send_id = uuid.uuid4().hex[:12]
         item = {"talker": talker, "content": content, "_id": send_id, "_at": int(time.time() * 1000)}
+        if image_path:
+            item["imagePath"] = image_path
         did = str(device_id or "").strip()
         dropped = []
         with self._outbox_lock:

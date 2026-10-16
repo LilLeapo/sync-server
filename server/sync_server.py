@@ -537,11 +537,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         talker = str(msg.get("talker") or "").strip()
         content = str(msg.get("content") or "")
+        image_path = str(msg.get("imagePath") or "").strip()
         device = str(msg.get("device") or "").strip()
-        if not talker or not content:
+        if not talker or (not content and not image_path):
             self._json(400, {"ok": False, "error": "missing talker/content"})
             return
-        send_id = listener.send(talker, content, device or None)
+        send_id = listener.send(talker, content, device or None, image_path or None)
         self._json(200, {"ok": True, "queued": True, "sendId": send_id, "device": device,
                          "clients": listener.client_count()})
 
