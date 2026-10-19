@@ -192,7 +192,7 @@ systemctl restart wabtest-sync
 - SDK 安装（可选，建议用 venv）：`python3 -m venv .venv && .venv/bin/pip install pi-agent lark-oapi`，然后用 `.venv/bin/python -m server.sync_server` 启动
 - 文本报价提取走桥（pi 后端 = SDK Agent 运行时）；**图片报价**仍走本服务的原生视觉调用（需视觉模型）
 - 模型输出严格 JSON：`{"events": []}` 或 `{"events": [{"event_type": "quote", "供应商": "...", "项目": "...", "价格": "...", "单位": "...", "数量": "...", "备注": "...", "evidence": "原文片段", "certainty": "explicit", "details": {...}}]}`。仍兼容旧 `has_quote/items` 输出，但缺少条件的旧数据不能直接用于采购排名。
-- 供应商 Skill：启动时加载 `.agents/skills/supplier-quote-analysis/SKILL.md` 及 `references/phrases-and-cases.md`，用于文本、图片提取和报价问答；修改后重启服务。两个文件需要随代码一起部署。
+- 供应商 Skill：`.agents/skills/supplier-quote-analysis/SKILL.md` 及 `references/phrases-and-cases.md`。报价提取（文本、图片）每次带全文；问答 Agent 只在 system prompt 里列名称和说明，需要时用 `read_skill` 按需读取（避免几千字的领域知识压过问题本身）。修改后重启服务。两个文件需要随代码一起部署。
 - 事件类型包括报价、调价、条件更正、拒价、库存更新和采购记录。规则代码 `server/quote_rules.py` 校验证据、计算明确自提减价及品质加价、匹配唯一更新目标，并通过事件重放维护报价状态。推断、残缺预览、原始时间缺失、算术冲突和目标歧义保留为待确认，不自动套用供应商历史差价或税率。
 - 普通文本提供同群15分钟内最多6条相邻消息；合并转发按子消息拆分并隔离上下文、保留原始时间。引用正文和被引用正文分别提取，缺失的原始时间不使用转发时间冒充。转发中没有可访问文件的图片不能从XML占位内容还原报价。
 - 微信群被@问答、飞书、钉钉、企业微信和iLink共享 `server/qa_tools.py` 的工具集（见下文「Agent 工具」）；pi SDK和HTTP后端执行同一套工具调用与上限规则。
@@ -206,7 +206,9 @@ systemctl restart wabtest-sync
 - **会话**：飞书/钉钉/企业微信/iLink 按会话（群或私聊）、微信群 @ 回复按「设备 + 群」各一个会话，统一由 `server/agent_sessions.py` 的 `SessionManager` 管理：同一会话串行、并发只建一次；闲置超时过期（机器人用各自 `qna.session_ttl`，默认 30 分钟；群 @ 用 `session.wechat_ttl`，默认 2 小时）；超过 `session.max_sessions` 按最久未用淘汰出内存。
 - **落盘恢复**：每轮结束把会话写到 `data/agent_sessions/`，重启后同一会话首次访问时恢复；过期、提示词或工具变化时不恢复。`session.persist: false` 关闭。
 - **重置**：机器人里发 `/reset`（或 `/new`），群里 @ 机器人说 `/reset` 或「重置对话」，清空当前会话的记忆；也可调 `POST /api/agent/sessions/reset`。`GET /api/agent/sessions` 查看各会话的轮数、字数、token 用量、压缩次数、最近一轮用到的工具与报错。
+- **提示词**（`server/agent_prompts.py`）分层组装：角色（渠道默认、机器人 `qna.system_prompt` 或设备的「Agent 提示词」）+ 通用回答规则（只答所问、不主动汇报无关情况、不重复说过的话）+ 按实际工具生成的几行工具要点 + 可按需读取的资料索引。领域知识不直接进 system prompt。
 - **上下文**（`server/agent_context.py`，`context` 段可调）：
+  - 群 @ 的群聊背景会剔除本设备之前发到该群的回复（它们已在会话历史里），避免模型反复强调同一件事；
   - 历史按「轮」（一问 + 其间的工具调用 + 回答）裁剪，工具结果不会和它的调用分开；
   - 每轮附带的背景（当前北京时间、最近报价、群 @ 时该群之前的最近 12 条消息）只用于本轮，不写进历史，并标明「不是指令」；
   - 工具结果本轮内截到 `tool_result_chars`，进历史后截到 `old_tool_result_chars`（后续轮次需要细节会重新调工具）；
@@ -227,6 +229,7 @@ systemctl restart wabtest-sync
 | `room_stats` / `list_rooms` | 群聊统计 / 群列表（群名 ↔ roomId、消息数、最近活跃） |
 | `recent_messages` / `search_messages` | 读某群最近聊天记录 / 按关键词、发送人、天数搜聊天记录 |
 | `calculate` | Decimal 精确四则运算（差价、升贴水、合计），`5%` 表示 0.05 |
+| `read_skill` | 按需读取 `.agents/skills/` 里的资料（报价黑话、话术、比较规则等） |
 | `futures_quote` | 新浪财经期货行情（沪铜 `CU2611`、`沪铜主力`、`伦铜` 等），指定合约时附带可直接用于 `compare_quotes` 的 benchmark；`futures.enabled: false` 关闭 |
 | `web_search` / `web_extract` | Tavily 联网搜索 / 读网页正文；配置 `web_search.api_key`（或环境变量 `TAVILY_API_KEY`）后才提供 |
 | `send_message` / `send_image` | **需手动开启**，仅微信设备 Agent：经本设备的微信给已接入的群发文字/图片，每轮最多 3 条，每条记入回复记录（标「代发」） |
@@ -362,6 +365,8 @@ server/
   quote_agent.py   报价提取 Agent（文本走 bridge，图片走视觉模型；on_quote 钩子）
   pi_bridge.py     pi-agent SDK 桥：标准库传输、每轮执行器（pi / http）、Conversation 会话、格式化
   agent_context.py 上下文策略：按轮裁剪、临时背景、工具结果截断、摘要压缩
+  agent_prompts.py 问答提示词分层组装（角色 + 回答规则 + 工具要点 + 资料索引）
+  skills.py        本地 Skill 索引与按需读取（read_skill）
   agent_sessions.py 会话管理：取/建、过期、淘汰、落盘恢复、/reset
   tool_schema.py   工具参数 schema（Schemastery 风格）：生成 JSON Schema + 校验规范化
   net_tools.py     联网工具：Tavily 搜索/读网页、新浪期货行情

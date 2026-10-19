@@ -31,12 +31,9 @@ import sys
 import threading
 import time
 
+from .agent_prompts import WECHAT_REPLY_SYSTEM  # noqa: F401  (sync_server 经此引用)
 from .agent_sessions import SessionManager
 from .device_settings import DEFAULTS as DEVICE_DEFAULTS
-
-WECHAT_REPLY_SYSTEM = """你是微信群里的助手，只有在被 @ 时才会看到这条消息。
-用简体中文直接回答，控制在一两段。不要使用 Markdown 标题、代码块或表格。
-不要 @ 任何人，也不要复述这段说明。不知道就说不知道，不要编造。"""
 
 MAX_REPLY_CHARS = 1500
 MAX_LOG = 500  # 回复记录保留条数
@@ -51,6 +48,10 @@ RESET_REPLY = "已开启新对话，之前的上下文已清空。"
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def _norm(text) -> str:
+    return re.sub(r"\s+", "", str(text or ""))
 
 
 class ReplyLog:
@@ -147,6 +148,13 @@ class ReplyLog:
             entry.update(status="delivered", deliveredAt=at, deliveredTo=device_id)
         else:
             entry.update(status="dropped", reason="设备离线太久，待发队列溢出，这条回复被丢弃")
+
+    def sent_texts(self, device_id: str, room: str, limit: int = 100) -> set[str]:
+        """本设备最近发到这个群的文字（回复与代发，已入队或已取走），用于从群聊背景里剔除自己说过的话。"""
+        with self._lock:
+            rows = [e for e in self._items[-limit * 5:] if e["deviceId"] == device_id and e["roomId"] == room
+                    and e.get("reply") and e["status"] in ("queued", "delivered")]
+        return {_norm(e["reply"]) for e in rows[-limit:]}
 
     def list(self, after_rev: int = 0, device: str | None = None, limit: int = 200) -> tuple[list[dict], int]:
         with self._lock:
@@ -400,8 +408,12 @@ class WechatReplier:
             at = int(msg.get("createTime") or 0)
         except (TypeError, ValueError):
             at = 0
-        rows = self.store.query_messages(room=str(msg.get("roomId") or ""), device=str(msg.get("deviceId") or ""),
-                                         before_ms=at, limit=CONTEXT_MESSAGES, exclude_svr=msg.get("msgSvrId"))
+        room, device_id = str(msg.get("roomId") or ""), str(msg.get("deviceId") or "")
+        rows = self.store.query_messages(room=room, device=device_id, before_ms=at, limit=CONTEXT_MESSAGES * 2,
+                                         exclude_svr=msg.get("msgSvrId"))
+        # 手机模块若把本机发出的回复也上报了，这里剔掉：它们已在会话历史里，重复出现只会让模型反复强调同一件事
+        own = self.log.sent_texts(device_id, room)
+        rows = [r for r in rows if _norm((r.get("msg") or {}).get("content")) not in own][:CONTEXT_MESSAGES]
         if not rows:
             return None
         return "本群在这条 @ 之前的最近消息（按时间顺序）：\n" + "\n".join(message_line(r) for r in reversed(rows))

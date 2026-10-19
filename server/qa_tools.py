@@ -28,6 +28,7 @@ from decimal import Decimal, DivisionByZero, InvalidOperation
 from .pi_bridge import _fmt_row
 from .quote_messages import timestamp
 from .quote_rules import QuoteLedger, compare_quotes
+from .skills import list_skills, read_skill
 from .tool_schema import S
 
 # 启动时 configure() 注入；默认没有联网工具与插件工具（测试保持离线）
@@ -411,6 +412,14 @@ def build_qa_tools(store, quote_log, device: str | None = None, *, sender=None,
               S.object({"expression": S.string().max(200).required().description("如 (109900-300)*25.5")}),
               lambda params: calculate(params["expression"])),
     ]
+    skills = [s["name"] for s in list_skills()]
+    if skills:
+        tools.append(_tool(
+            "read_skill", "读取资料", "按需读取本地知识资料（Skill），如报价黑话、供应商话术、采购比较规则。"
+            "只在解读看不懂的报价说法或做采购比较时读取；file 用于读取资料里列出的参考文件。",
+            S.object({"name": S.enum(skills).required().description("资料名"),
+                      "file": S.string().max(200).description("参考文件，如 references/phrases-and-cases.md，可选")}),
+            lambda params: read_skill(params["name"], params.get("file"))))
     tools += [dict(t) for t in _ENV["net"]]
     if sender is not None:
         tools += _send_tools(store, device, sender, resolve=lambda p: room_of(p, must_exist=True))

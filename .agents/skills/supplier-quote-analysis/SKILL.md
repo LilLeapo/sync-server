@@ -50,4 +50,4 @@ description: 解读铜铝供应商聊天报价中的黑话、常用话术和零�
 
 新增话术时记录原文、日期和来源，把明确事实与待确认的行业惯例分开；只有经过验证的别名才能进入业务配置。
 
-服务端 `server/quote_skill.py` 加载本文件及话术参考，文本和图片提取使用相同知识；报价问答通过 `current_quotes`、`compare_quotes`、`quote_history`、`quote_evidence` 使用 `server/quote_rules.py` 的处理结果。Skill 内容修改后重启服务生效。比较默认只使用24小时内的报价；历史分析需显式指定比较时点。代码没有联网行情源，合约换算需要有来源且与比较时点一致的基准。
+服务端 `server/quote_skill.py` 加载本文件及话术参考，文本和图片提取使用相同知识；问答 Agent 只在 system prompt 里看到本 Skill 的名称和说明，需要时用 `read_skill` 读取正文与参考资料。报价问答通过 `current_quotes`、`compare_quotes`、`quote_history`、`quote_evidence` 使用 `server/quote_rules.py` 的处理结果。Skill 内容修改后重启服务生效。比较默认只使用24小时内的报价；历史分析需显式指定比较时点。合约换算需要有来源且与比较时点一致的基准，问答可用 `futures_quote` 查询新浪期货行情；现货均价没有联网来源。

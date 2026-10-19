@@ -22,7 +22,7 @@ try:
     from .store import Store, QuoteLog, device_id_of
     from .device_settings import DEFAULTS as DEVICE_DEFAULTS, DeviceSettings
     from .qa_tools import tool_catalog
-    from . import agent_sessions, qa_tools, quote_agent, pi_bridge, bot_plugins, wechat_reply
+    from . import agent_prompts, agent_sessions, qa_tools, quote_agent, pi_bridge, bot_plugins, wechat_reply
     from . import feishu as feishu_mod
     from . import dingtalk as dingtalk_mod
     from . import wecom as wecom_mod
@@ -33,7 +33,7 @@ except ImportError:  # 允许 python3 server/sync_server.py 直接运行
     from server.store import Store, QuoteLog, device_id_of
     from server.device_settings import DEFAULTS as DEVICE_DEFAULTS, DeviceSettings
     from server.qa_tools import tool_catalog
-    from server import agent_sessions, qa_tools, quote_agent, pi_bridge, bot_plugins, wechat_reply
+    from server import agent_prompts, agent_sessions, qa_tools, quote_agent, pi_bridge, bot_plugins, wechat_reply
     from server import feishu as feishu_mod
     from server import dingtalk as dingtalk_mod
     from server import wecom as wecom_mod
@@ -240,7 +240,7 @@ class Handler(BaseHTTPRequestHandler):
         self._json(200, {
             "ok": True, "defaults": dict(DEVICE_DEFAULTS),
             "devices": settings.all(), "tools": tool_catalog(),
-            "basePrompt": wechat_reply.WECHAT_REPLY_SYSTEM,
+            "basePrompt": agent_prompts.wechat_base_prompt(),
             "replyAvailable": getattr(self.server, "wechat_replier", None) is not None,
             "quotesAvailable": getattr(self.server, "agent", None) is not None,
         })

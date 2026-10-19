@@ -120,8 +120,12 @@ class TestHttpBackend(unittest.TestCase):
                 session = bridge.begin_session("compare", "用户自定义提示词", build_qa_tools(None, QuoteLog(os.path.join(root, "quotes.jsonl"))))
                 self.assertEqual(session.ask("比较到宜兴的价格"), "110800.0")
                 first, second = _ToolLLMHandler.requests
-                self.assertIn("87款", first["messages"][0]["content"])
-                self.assertIn("用户自定义提示词", first["messages"][0]["content"])
+                system = first["messages"][0]["content"]
+                self.assertTrue(system.startswith("用户自定义提示词"))
+                # 报价 Skill 不整段进 system prompt：只列索引，正文经 read_skill 按需读取
+                self.assertIn("supplier-quote-analysis", system)
+                self.assertNotIn("87款", system)
+                self.assertIn("read_skill", [tool["function"]["name"] for tool in first["tools"]])
                 self.assertIn("compare_quotes", [tool["function"]["name"] for tool in first["tools"]])
                 tool_message = next(msg for msg in second["messages"] if msg["role"] == "tool")
                 self.assertEqual(tool_message["tool_call_id"], "compare-1")

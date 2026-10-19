@@ -42,12 +42,10 @@ import urllib.request
 from .agent_context import (LIMIT_ANSWER, TOOL_LIMIT_TEXT, ContextPolicy, Transcript, clip, content_text,
                             dumps_args, pick_compaction, render, shrink_tool_results, summary_request,
                             system_with_summary, transcript_chars, with_context)
-from .quote_skill import quote_guidance
+from .agent_prompts import QNA_SYSTEM, compose_system
 from .tool_schema import SchemaError, tool_parameters, tool_schema
 
 DEFAULT_TIMEOUT_S = 90
-QNA_SYSTEM = """你是绑在飞书群里的报价助理。只根据给定的资料回答，资料不足就直说没有查到，
-不要编造。回答使用简体中文，简明扼要；涉及多行数据时逐行列出。"""
 
 FORMAT_SYSTEM = """你是报价推送格式化器。用户给出一个群聊中提取到的报价记录（JSON 数组），
 请整理成适合发到飞书群的纯文本消息，要求：
@@ -725,9 +723,9 @@ class PiBridge:
 
     def begin_session(self, session_id: str, system: str = QNA_SYSTEM,
                       tools: list[dict] | None = None) -> Conversation:
-        if any(tool["name"] == "compare_quotes" for tool in (tools or [])):
-            system += "\n\n" + quote_guidance() + "\n询价比较调用compare_quotes，使用quote_evidence核查依据。latest_quotes/search_quotes是历史记录，不代表当前有效报价。不得把待确认方案当最低可采购价格，不得编造基准行情。"
-        return Conversation(self, session_id, system, tools or [])
+        """system 是角色（含设备职责等）；回答规则、工具要点、资料索引由 agent_prompts 统一接上。"""
+        tools = list(tools or [])
+        return Conversation(self, session_id, compose_system(system, tools), tools)
 
     # -- 报价格式化（LLM，失败自动降级模板） -------------------------
 

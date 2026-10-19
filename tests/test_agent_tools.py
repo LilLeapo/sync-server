@@ -29,9 +29,9 @@ def tools_by_name(tools):
     return {t["name"]: t for t in tools}
 
 
-def run(tools, name, **params):
+def run(tools, tool_name, /, **params):
     """经 ToolGate 调用：与 Agent 真实路径一致（schema 规范化 + 截断）。"""
-    text, _ = ToolGate(tools, ContextPolicy()).run(name, params)
+    text, _ = ToolGate(tools, ContextPolicy()).run(tool_name, params)
     return text
 
 
