@@ -138,7 +138,10 @@ class TestRelayDeviceBinding(unittest.TestCase):
         info = self.listener._parse_hello(
             json.dumps({"hello": "wabsync/1", "deviceId": DEV_A,
                         "deviceName": "小米 14"}).encode())
-        self.assertEqual(info, {"device_id": DEV_A, "device_name": "小米 14"})
+        self.assertEqual(info, {"device_id": DEV_A, "device_name": "小米 14", "caps": []})
+        info = self.listener._parse_hello(
+            json.dumps({"hello": "wabsync/1", "deviceId": DEV_A, "caps": ["imageUrl", 3, "", "imageUrl"]}).encode())
+        self.assertEqual(info["caps"], ["imageUrl"])
 
     def test_parse_hello_rejects_bad_token(self):
         listener = RelayListener("127.0.0.1", 0, self.store, token="secret")

@@ -13,7 +13,8 @@ import sys
 import threading
 
 MAX_PROMPT_CHARS = 4000
-# tools=None 表示「全部工具」：以后新增的工具对没改过设置的设备自动可用
+# tools=None 表示「全部工具」：以后新增的工具对没改过设置的设备自动可用；
+# 但不含 opt_in 工具（发送消息/图片等对外动作），它们必须显式勾选（tools 为列表）
 DEFAULTS = {"reply": True, "quotes": True, "prompt": "", "tools": None}
 
 

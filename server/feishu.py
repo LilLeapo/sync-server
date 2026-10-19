@@ -27,6 +27,8 @@ import threading
 import time
 import urllib.request
 
+from .agent_sessions import SessionManager, session_settings, sessions_dir
+
 FEISHU_BASE = "https://open.feishu.cn/open-apis"
 TEXT_LIMIT = 8000          # 单条 text 消息截断长度（飞书限制远大于此，留余量）
 DEFAULT_QA_SYSTEM = "你是绑在飞书群里的报价助理。"  # 缺省时用 pi_bridge.QNA_SYSTEM
@@ -221,8 +223,9 @@ class FeishuBot:
         self._seen_events: set[str] = set()
         self._event_q: "queue.Queue[dict]" = queue.Queue()
         self._push_q: "queue.Queue[tuple]" = queue.Queue()
-        self._sessions: dict[str, list] = {}   # chat_id -> [session, last_ts]
-        self._sessions_lock = threading.Lock()
+        self.sessions = SessionManager(
+            "feishu", ttl=self.qna_session_ttl, persist_dir=sessions_dir(data_dir, bridge),
+            max_sessions=int(session_settings(bridge).get("max_sessions") or 500), log=lambda m: self.log(m))
         self._warned_no_bridge = False
         self.pushed = 0
 
@@ -415,7 +418,7 @@ class FeishuBot:
                 self.log(f"事件循环异常: {e}")
             if time.time() - last_gc > 600:
                 last_gc = time.time()
-                self._gc_sessions()
+                self.sessions.sweep()
 
     def _dispatch(self, ev: dict):
         header = ev.get("header") or {}
@@ -450,6 +453,7 @@ class FeishuBot:
         api = self.plugin_host.spawn_api() if self.plugin_host else None
         if api is not None:
             api._set_event(ev, text)
+            api.sessions, api.session_key = self.sessions, chat_id
 
         # 1) 插件消息钩子（先于命令与问答）
         if self.plugin_host:
@@ -525,22 +529,8 @@ class FeishuBot:
 
     def _get_session(self, chat_id: str):
         from .pi_bridge import QNA_SYSTEM
-        with self._sessions_lock:
-            entry = self._sessions.get(chat_id)
-            if entry and time.time() - entry[1] < self.qna_session_ttl:
-                entry[1] = time.time()
-                return entry[0]
-        system = self.qna_system or QNA_SYSTEM
-        session = self.bridge.begin_session(f"feishu-{chat_id}", system, self._qa_tools())
-        with self._sessions_lock:
-            self._sessions[chat_id] = [session, time.time()]
-        return session
-
-    def _gc_sessions(self):
-        with self._sessions_lock:
-            now = time.time()
-            for k in [k for k, v in self._sessions.items() if now - v[1] > self.qna_session_ttl]:
-                del self._sessions[k]
+        return self.sessions.get(chat_id, lambda: self.bridge.begin_session(
+            f"feishu-{chat_id}", self.qna_system or QNA_SYSTEM, self._qa_tools()))
 
     def _qa_tools(self) -> list[dict]:
         """给 Agent 的工具：检索报价 / 查群聊统计。handler 同步返回 str。"""

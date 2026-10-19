@@ -16,7 +16,13 @@
       str  → 机器人回复该文本；False → 插件已自行处理；None → 继续走命令/问答
   register_quote_hook(fn)        fn(api, ctx) -> None | False
       ctx = {"room": str, "rows": [报价行...]}；返回 False 抑制默认群推送（插件自行推）
+  register_agent_tool(name, handler, description="", parameters=None, label="", opt_in=False)
+      给问答 Agent 加工具：handler(params, ctx) -> str，ctx = {"store", "quote_log", "device", "ledger"}；
+      parameters 为 tool_schema 的 S.object(...) 或 JSON Schema；opt_in=True 的工具需在设备设置里手动勾选
   运行时对象：api.store / api.quotes / api.bridge / api.feishu / api.wecom / api.ilink / api.config / api.reply() / api.log()
+  api.sessions / api.session_key：当前会话所在的 SessionManager 与 key（机器人分发事件时设置）
+
+内置指令（不依赖 plugins 目录）：/reset、/new —— 清空当前会话的 Agent 记忆。
 
 加载策略：importlib 逐个加载，单个插件失败只告警不拖垮主体。
 """
@@ -28,6 +34,15 @@ import re
 import sys
 
 MODULE_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+TOOL_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
+
+
+def _reset_session(api, event, args):
+    sessions, key = getattr(api, "sessions", None), getattr(api, "session_key", None)
+    if sessions is None or key is None:
+        return "这个渠道不支持重置对话。"
+    sessions.reset(key)
+    return "已开启新对话，之前的上下文已清空。"
 
 
 class PluginApi:
@@ -45,6 +60,8 @@ class PluginApi:
         self.bot = None
         self.event = None
         self.text = ""
+        self.sessions = None
+        self.session_key = None
 
     def _set_event(self, event: dict, text: str):
         self.event = event
@@ -64,6 +81,19 @@ class PluginApi:
 
     def register_quote_hook(self, fn):
         self.host.quote_hooks.append(fn)
+
+    def register_agent_tool(self, name, handler, description: str = "", parameters=None,
+                            label: str = "", opt_in: bool = False):
+        if not TOOL_NAME_RE.match(str(name)):
+            raise ValueError(f"工具名不合法：{name}（字母开头，只含字母数字下划线）")
+        from .tool_schema import S, Schema
+        schema = parameters if isinstance(parameters, Schema) else S.from_json(
+            parameters or {"type": "object", "properties": {}})
+        self.host.agent_tools[name] = {
+            "name": name, "label": label or name, "description": description or name, "schema": schema,
+            "parameters": schema.to_json(), "handler": handler, "opt_in": bool(opt_in),
+            "plugin": self.host.current_plugin,
+        }
 
     # -- 运行期便捷方法 -------------------------------------------
 
@@ -86,8 +116,13 @@ class PluginHost:
         self.commands: dict[str, dict] = {}
         self.message_hooks: list = []
         self.quote_hooks: list = []
+        self.agent_tools: dict[str, dict] = {}
         self.current_plugin = ""
         self.api = PluginApi(self)  # 注册模板；运行期事件用 spawn_api() 派生
+        for name in ("reset", "new"):
+            self.commands[name] = {"handler": _reset_session, "usage": "/" + name,
+                                   "description": "清空当前对话的 Agent 记忆，重新开始", "admin_only": False,
+                                   "plugin": "builtin"}
 
     # -- 装配运行时资源 -------------------------------------------
 

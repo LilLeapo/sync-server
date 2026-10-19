@@ -366,6 +366,38 @@ class Store:
             end = min(start + limit, total)
             return rows[start:end], total, start
 
+    def query_messages(self, room: str | None = None, device: str | None = None, keyword: str = "",
+                       sender: str = "", since_ms: int = 0, before_ms: int = 0, limit: int = 50,
+                       exclude_svr=None) -> list[dict]:
+        """从新到旧扫描消息记录（Agent 工具 / 群 @ 上下文用），最多 limit 条。
+
+        keyword 匹配正文；sender 匹配发送人 ID 或显示名；时间用 createTime（缺失时用 receivedAt）。
+        device 的约定同 list_messages：None 不筛选，"" 只看无设备标识的旧数据。
+        """
+        needle = str(keyword or "").strip().lower()
+        who = str(sender or "").strip().lower()
+        out = []
+        with self.lock:
+            for r in reversed(self.messages):
+                msg = r.get("msg") or {}
+                if device is not None and device_id_of(msg) != device:
+                    continue
+                if room and msg.get("roomId") != room:
+                    continue
+                at = msg.get("createTime") or r.get("receivedAt") or 0
+                if (before_ms and at > before_ms) or (since_ms and at < since_ms):
+                    continue
+                if exclude_svr not in (None, "") and str(msg.get("msgSvrId")) == str(exclude_svr):
+                    continue
+                if who and who not in (str(msg.get("sender") or "") + " " + str(msg.get("senderName") or "")).lower():
+                    continue
+                if needle and needle not in str(msg.get("content") or "").lower():
+                    continue
+                out.append(r)
+                if len(out) >= limit:
+                    break
+        return out
+
     def rooms(self, device: str | None = None):
         with self.lock:
             seen: dict[str, dict] = {}

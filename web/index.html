@@ -713,6 +713,7 @@
   .dev-tool { display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; cursor: pointer; }
   .dev-tool input { margin-top: 2px; accent-color: var(--accent); }
   .dev-tool code { font: 11px var(--mono); color: var(--faint); }
+  .dev-tool__warn { font-style: normal; font-size: 11px; color: var(--warn); }
   .dev-hint { font-size: 11.5px; color: var(--warn); }
   .dev-actions { display: flex; align-items: center; gap: 8px; }
   .dev-actions .btn.primary { background: var(--accent); color: #fff; border-color: transparent; }
@@ -739,6 +740,8 @@
   .rcard__a { margin-top: 6px; padding-left: 10px; border-left: 2px solid var(--accent); white-space: pre-wrap; word-break: break-word; }
   .rcard__a.none { border-left-color: var(--line); color: var(--faint); }
   .rcard__reason { margin-top: 6px; font-size: 12px; color: var(--muted); }
+  .rcard__tools { margin-top: 4px; font: 11px var(--mono); color: var(--faint); }
+  .rcard__kind { padding: 0 6px; border-radius: 4px; font-size: 10.5px; background: var(--warn-soft); color: var(--warn); }
   .rcard.bad .rcard__reason { color: var(--danger); }
 
   ::-webkit-scrollbar { width: 9px; height: 9px; }
@@ -1606,14 +1609,18 @@
     if (r.status === "queued") note = "等这台手机下次上报或心跳时取走；手机离线时会一直排队";
     if (r.status === "delivered" && r.deliveredAt) note = fmtTime(r.deliveredAt) + " 被手机取走，由手机端模块发出";
     const asker = r.senderName || r.sender || "";
+    const tools = (r.tools || []).length ? "工具：" + r.tools.join("、") +
+      (r.usage && r.usage.total ? " · " + r.usage.total + " tokens" : "") : "";
     return (
       '<div class="rcard' + (st[1] === "bad" ? " bad" : "") + '">' +
       '<div class="rcard__meta">' +
       '<span title="' + escapeHtml(new Date(r.at).toLocaleString()) + '">' + fmtTime(r.at) + "</span>" +
       devTag + roomTag +
+      (r.kind === "agent_send" ? '<span class="rcard__kind" title="Agent 用发送工具代发的消息">代发</span>' : "") +
       '<span class="rcard__status ' + st[1] + '">' + escapeHtml(st[0]) + "</span></div>" +
       '<div class="rcard__q">' + (asker ? "<b>" + escapeHtml(asker) + "</b>：" : "") + escapeHtml(r.question || "") + "</div>" +
       (r.reply ? '<div class="rcard__a">' + escapeHtml(r.reply) + "</div>" : "") +
+      (tools ? '<div class="rcard__tools">' + escapeHtml(tools) + "</div>" : "") +
       (note ? '<div class="rcard__reason">' + escapeHtml(note) + "</div>" : "") +
       "</div>"
     );
@@ -2187,12 +2194,14 @@
     $("#devQuotes").checked = cfg.quotes !== false;
     $("#devPrompt").value = cfg.prompt || "";
     $("#devBasePrompt").textContent = state.agentCfg.basePrompt || "";
-    // tools 为 null 表示全部工具（含以后新增的）
+    // tools 为 null 表示全部常规工具（含以后新增的）；会对外发送的 optIn 工具必须单独勾选
     const picked = cfg.tools == null ? null : new Set(cfg.tools);
     $("#devTools").innerHTML = (state.agentCfg.tools || []).map((t) =>
       '<label class="dev-tool"><input type="checkbox" value="' + escapeHtml(t.name) + '"' +
-      (picked === null || picked.has(t.name) ? " checked" : "") + " />" +
+      (t.optIn ? ' data-optin="1"' : "") +
+      ((picked === null ? !t.optIn : picked.has(t.name)) ? " checked" : "") + " />" +
       "<span>" + escapeHtml(t.label) + " <code>" + escapeHtml(t.name) + "</code>" +
+      (t.optIn ? ' <em class="dev-tool__warn">会经手机真实发出，需手动开启</em>' : "") +
       "<small>" + escapeHtml(t.description) + "</small></span></label>").join("");
     syncToolsHint();
     const status = $("#devStatus");
@@ -2212,13 +2221,14 @@
     if (id === null) return;
     const boxes = Array.from(document.querySelectorAll("#devTools input"));
     const picked = boxes.filter((b) => b.checked).map((b) => b.value);
+    // 恰好是「全部常规工具、不含 optIn」时存 null：以后新增的常规工具也自动可用
+    const isDefault = boxes.every((b) => b.checked === !b.dataset.optin);
     const body = {
       deviceId: id,
       reply: $("#devReply").checked,
       quotes: $("#devQuotes").checked,
       prompt: $("#devPrompt").value,
-      // 全选时存 null：以后新增的工具对这台设备也自动可用
-      tools: picked.length === boxes.length ? null : picked,
+      tools: isDefault ? null : picked,
     };
     const status = $("#devStatus");
     const btn = $("#devSave");
@@ -2248,7 +2258,8 @@
   }
 
   function setAllTools(on) {
-    document.querySelectorAll("#devTools input").forEach((b) => { b.checked = on; });
+    // 「全选」只选常规工具；会对外发送的 optIn 工具保持原状，需要逐个勾选
+    document.querySelectorAll("#devTools input").forEach((b) => { if (!(on && b.dataset.optin)) b.checked = on; });
   }
 
   $("#devClose").addEventListener("click", closeDevSettings);

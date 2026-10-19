@@ -14,17 +14,24 @@
 两台设备都被 @（如 @所有人）则各自回复。每台设备的回复开关、提示词、可用工具
 来自 DeviceSettings（设备的 Agent 不一定做报价）。
 
-每条被 @ 的消息都记进回复记录（ReplyLog）：回了什么、为什么没回、是否已被手机取走。
+每条被 @ 的消息都记进回复记录（ReplyLog）：回了什么、用了哪些工具、为什么没回、是否已被手机取走。
+Agent 经 send_message / send_image 工具代发的消息也各记一条（kind=agent_send）。
+
+会话（SessionManager，命名空间 wechat）：闲置 session_ttl（默认 2 小时）后过期，可落盘恢复；
+群里 @ 机器人说「/reset」或「重置对话」清空本设备在该群的记忆。每轮附带该群在这条 @ 之前的
+最近几条消息作为背景（只用于本轮，不进会话历史）。
 """
 from __future__ import annotations
 
 import json
 import os
 import queue
+import re
 import sys
 import threading
 import time
 
+from .agent_sessions import SessionManager
 from .device_settings import DEFAULTS as DEVICE_DEFAULTS
 
 WECHAT_REPLY_SYSTEM = """你是微信群里的助手，只有在被 @ 时才会看到这条消息。
@@ -34,6 +41,12 @@ WECHAT_REPLY_SYSTEM = """你是微信群里的助手，只有在被 @ 时才会�
 MAX_REPLY_CHARS = 1500
 MAX_LOG = 500  # 回复记录保留条数
 MAX_EARLY = 200  # 回执先于登记到达时暂存的条数上限
+DEFAULT_SESSION_TTL = 7200  # 群会话闲置 2 小时后重开
+CONTEXT_MESSAGES = 12  # 每轮附带的群内最近消息条数
+MAX_TURN_SENDS = 3  # 每轮最多经发送工具代发的条数
+RESET_WORDS = {"/reset", "/new", "重置对话", "新对话", "清空上下文"}
+MENTION_PREFIX_RE = re.compile(r"^(?:@[^\s\u2005]+[\s\u2005]*)+")
+RESET_REPLY = "已开启新对话，之前的上下文已清空。"
 
 
 def _now_ms() -> int:
@@ -60,8 +73,10 @@ class ReplyLog:
         self._rev = 0
         self._load()
 
-    def add(self, msg: dict, status: str, reason: str = "") -> int:
+    def add(self, msg: dict, status: str, reason: str = "", kind: str = "reply") -> int:
+        """kind：reply 被 @ 后的回复；agent_send Agent 经发送工具代发。"""
         entry = {
+            "kind": kind,
             "at": _now_ms(),
             "deviceId": str(msg.get("deviceId") or ""),
             "roomId": str(msg.get("roomId") or ""),
@@ -179,20 +194,24 @@ class ReplyLog:
 
 class WechatReplier:
     def __init__(self, bridge, send, state_path: str | None = None, *, store=None, quote_log=None,
-                 settings=None, log_path: str | None = None):
+                 settings=None, log_path: str | None = None, session_ttl: float = DEFAULT_SESSION_TTL,
+                 sessions_dir: str | None = None, max_sessions: int = 500, device_caps=None):
         """bridge: PiBridge（需有 begin_session）。
-        send(talker, content, device_id) -> 指令 id（str）或 bool，假值表示没能入队。
+        send(talker, content, device_id, image_path=None, image_url=None) -> 指令 id（str）或 bool，
+        假值表示没能入队（纯文字时只传前三个参数）。
 
         device_id 为触发本次回复的那台设备：下行只投给它，
         避免多设备同时监同一个群时由别的设备代发。
         state_path 记住网页的总开关；缺省文件时默认开启。
-        settings: DeviceSettings，每台设备的回复开关/提示词/工具；缺省时全部开启。
+        settings: DeviceSettings，每台设备的回复开关/提示词/工具；缺省时全部开启（opt_in 工具除外）。
+        sessions_dir: 会话落盘目录（None 不落盘）；device_caps(device_id) -> 握手声明的能力集合。
         """
         self.bridge = bridge
         self.send = send
         self.store = store
         self.quote_log = quote_log
         self.settings = settings
+        self.device_caps = device_caps
         self.log = ReplyLog(log_path)
         self._state_path = state_path
         self._flag_lock = threading.Lock()
@@ -200,8 +219,10 @@ class WechatReplier:
         self._load()
         self._seen: set = set()
         self._seen_lock = threading.Lock()
-        self._sessions: dict = {}
-        self._sessions_lock = threading.Lock()
+        self.sessions = SessionManager("wechat", ttl=session_ttl, persist_dir=sessions_dir,
+                                       max_sessions=max_sessions)
+        # 正在处理的 @（按设备）：发送工具据此限流、记录来源
+        self._active: dict[str, dict] = {}
         # 每台设备一条队列 + 一个工作线程：某台设备的慢回复不会堵住其他设备
         self._queues: "dict[str, queue.Queue[dict]]" = {}
         self._queues_lock = threading.Lock()
@@ -280,12 +301,20 @@ class WechatReplier:
             return None
         if not self._mark(msg):
             return None
+        room = str(msg.get("roomId") or "")
         entry = self.log.add(msg, "answering")
-        text, err = self._answer(msg, cfg)
+        if self._strip_mention(msg.get("content")) in RESET_WORDS:
+            self.sessions.reset(self._key(device_id, room))
+            return self._deliver(entry, room, device_id, RESET_REPLY)
+        text, err, turn = self._answer(msg, cfg)
+        if turn:
+            self.log.update(entry, tools=list(turn.get("tools") or []), usage=dict(turn.get("usage") or {}))
         if not text:
             self.log.update(entry, status="failed", reason=err)
             return None
-        room = str(msg.get("roomId") or "")
+        return self._deliver(entry, room, device_id, text)
+
+    def _deliver(self, entry: int, room: str, device_id: str, text: str) -> str | None:
         try:
             sent = self.send(room, text, device_id)
         except Exception as e:
@@ -328,36 +357,68 @@ class WechatReplier:
             self._seen.add(key)
         return True
 
-    def _answer(self, msg: dict, cfg: dict) -> tuple[str | None, str]:
-        """返回 (回复文本, 失败原因)。"""
+    @staticmethod
+    def _strip_mention(content) -> str:
+        return MENTION_PREFIX_RE.sub("", str(content or "").strip()).strip()
+
+    @staticmethod
+    def _key(device_id: str, room: str) -> str:
+        return f"{device_id or '-'}|{room}"
+
+    def _answer(self, msg: dict, cfg: dict) -> tuple[str | None, str, dict | None]:
+        """返回 (回复文本, 失败原因, 本轮信息 last_turn)。"""
         room = str(msg.get("roomId") or "")
         device_id = str(msg.get("deviceId") or "")
         sender = str(msg.get("senderName") or msg.get("sender") or "").strip()
         content = str(msg.get("content") or "").strip()
         prompt = f"群成员 {sender} 说：{content}" if sender else content
+        self._active[device_id] = {"msg": msg, "sends": 0}
+        sess = None
         try:
-            out = self._session(room, device_id, cfg).ask(prompt)
+            sess = self._session(room, device_id, cfg)
+            out = sess.ask(prompt, context=self._room_context(msg))
         except Exception as e:
             print(f"[wechat_reply] agent failed room={room}: {e}", file=sys.stderr)
-            return None, f"Agent 调用失败：{e}"
-        text = (out or "").strip()
+            return None, f"Agent 调用失败：{e}", None
+        finally:
+            self._active.pop(device_id, None)
+        turn = getattr(sess, "last_turn", None)
+        turn = turn if isinstance(turn, dict) else None
+        text = (out or "").strip() if isinstance(out, str) else ""
         if not text:
-            return None, "模型没有给出回复（调用失败或返回为空，详见服务日志）"
-        return text[:MAX_REPLY_CHARS], ""
+            if turn and turn.get("error"):
+                return None, f"Agent 调用失败：{turn['error']}", turn
+            return None, "模型没有给出回复（调用失败或返回为空，详见服务日志）", turn
+        return text[:MAX_REPLY_CHARS], "", turn
+
+    def _room_context(self, msg: dict) -> str | None:
+        """这条 @ 之前该群（同一设备）最近几条消息，只作本轮背景。"""
+        if self.store is None or not hasattr(self.store, "query_messages"):
+            return None
+        from .qa_tools import message_line
+        try:
+            at = int(msg.get("createTime") or 0)
+        except (TypeError, ValueError):
+            at = 0
+        rows = self.store.query_messages(room=str(msg.get("roomId") or ""), device=str(msg.get("deviceId") or ""),
+                                         before_ms=at, limit=CONTEXT_MESSAGES, exclude_svr=msg.get("msgSvrId"))
+        if not rows:
+            return None
+        return "本群在这条 @ 之前的最近消息（按时间顺序）：\n" + "\n".join(message_line(r) for r in reversed(rows))
 
     def _session(self, room: str, device_id: str = "", cfg: dict | None = None):
         """按「设备 + 群」复用会话；设备的提示词或工具改了就重开（旧会话记忆随之丢弃）。"""
         cfg = cfg or self.device_settings(device_id)
         sig = (cfg["prompt"], None if cfg["tools"] is None else tuple(cfg["tools"]))
-        key = (device_id, room)
-        with self._sessions_lock:
-            cur = self._sessions.get(key)
-            if cur is not None and cur[0] == sig:
-                return cur[1]
+
+        def factory():
             from .qa_tools import build_qa_tools
-            tools = (build_qa_tools(self.store, self.quote_log, device=device_id)
-                     if self.quote_log is not None else [])
-            if cfg["tools"] is not None:
+            tools = (build_qa_tools(self.store, self.quote_log, device=device_id,
+                                    sender=self._sender(device_id), opt_in=True)
+                     if self.quote_log is not None or self.store is not None else [])
+            if cfg["tools"] is None:  # 「全部工具」不含对外发送类（opt_in）工具
+                tools = [t for t in tools if not t.get("opt_in")]
+            else:
                 allowed = set(cfg["tools"])
                 tools = [t for t in tools if t["name"] in allowed]
             system = WECHAT_REPLY_SYSTEM
@@ -365,9 +426,47 @@ class WechatReplier:
                 system += "\n\n这台设备的职责说明：\n" + cfg["prompt"]
             system += f"\n当前微信群roomId：{room}。未指定其他群时查询使用这个room。"
             session_id = f"wechat-{device_id}-{room}" if device_id else f"wechat-{room}"
-            sess = self.bridge.begin_session(session_id, system, tools)
-            self._sessions[key] = (sig, sess)
-            return sess
+            return self.bridge.begin_session(session_id, system, tools)
+
+        return self.sessions.get(self._key(device_id, room), factory, sig=sig)
+
+    def _sender(self, device_id: str):
+        """发送工具的执行端：只在处理 @ 的过程中可用，每轮最多 MAX_TURN_SENDS 条，逐条记进回复记录。"""
+        def send(room_id: str, room_label: str, text: str = "", image_path: str = "", server_image: str = "") -> str:
+            active = self._active.get(device_id)
+            if active is None:
+                return "只能在回复群消息的过程中发送，没有发送。"
+            if active["sends"] >= MAX_TURN_SENDS:
+                return f"本轮已代发 {MAX_TURN_SENDS} 条，达到上限，没有发送。"
+            image_url = ""
+            if server_image:
+                caps = set(self.device_caps(device_id) or ()) if self.device_caps else set()
+                if "imageUrl" not in caps:
+                    return "这台设备的手机模块没有声明支持服务器图片下发（imageUrl），没有发送；可以改用手机上的图片路径。"
+                image_url = "/" + server_image.lstrip("/")
+            origin = active["msg"]
+            label = text or f"[图片] {image_path or server_image}"
+            entry = self.log.add({
+                "deviceId": device_id, "roomId": room_id, "roomName": room_label,
+                "sender": origin.get("sender"), "senderName": origin.get("senderName"),
+                "content": f"（Agent 代发，来自「{origin.get('roomName') or origin.get('roomId')}」里的 @）"
+                           + str(origin.get("content") or "")}, "answering", kind="agent_send")
+            try:
+                if image_path or image_url:
+                    sent = self.send(room_id, text, device_id, image_path=image_path or None, image_url=image_url or None)
+                else:
+                    sent = self.send(room_id, text, device_id)
+            except Exception as e:
+                self.log.update(entry, status="failed", reply=label, reason=f"下发失败：{e}")
+                return f"发送失败：{e}"
+            if not sent:
+                self.log.update(entry, status="failed", reply=label, reason="下发失败：手机长连接端口没有开启")
+                return "发送失败：手机长连接没有开启。"
+            active["sends"] += 1
+            self.log.queued(entry, label, sent if isinstance(sent, str) else "")
+            print(f"[wechat_reply] agent_send room={room_id} device={device_id or '-'} image={bool(image_path or image_url)}")
+            return f"已排队发送到「{room_label}」（{room_id}），手机取走后发出。"
+        return send
 
     def _loop(self, q: "queue.Queue[dict]"):
         while True:

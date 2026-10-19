@@ -32,6 +32,8 @@ import threading
 import time
 import uuid
 
+from .agent_sessions import SessionManager, session_settings, sessions_dir
+
 DEFAULT_WS_URL = "wss://openws.work.weixin.qq.com"
 TEXT_LIMIT = 20000          # Markdown 内容上限 20480 字节，留余量
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -504,8 +506,9 @@ class WeComBot:
         self._last_chat_type = 2
         self._chat_lock = threading.Lock()
         self._push_q: "queue.Queue[tuple]" = queue.Queue()
-        self._sessions: dict[str, list] = {}
-        self._sessions_lock = threading.Lock()
+        self.sessions = SessionManager(
+            "wecom", ttl=self.qna_session_ttl, persist_dir=sessions_dir(data_dir, bridge),
+            max_sessions=int(session_settings(bridge).get("max_sessions") or 500), log=lambda m: self.log(m))
         self._warned_no_bridge = False
 
         self.conn = connection or WeComConnection(
@@ -616,6 +619,7 @@ class WeComBot:
                                       "sender_id": {"open_id": userid}}}}
         if api is not None:
             api._set_event(event, text)
+            api.sessions, api.session_key = self.sessions, chatid
 
         # 1) 插件消息钩子
         if self.plugin_host:
@@ -728,17 +732,8 @@ class WeComBot:
 
     def _get_session(self, chatid: str):
         from .pi_bridge import QNA_SYSTEM
-        with self._sessions_lock:
-            entry = self._sessions.get(chatid)
-            if entry and time.time() - entry[1] < self.qna_session_ttl:
-                entry[1] = time.time()
-                return entry[0]
-        system = self.qna_system or QNA_SYSTEM
-        session = self.bridge.begin_session(
-            f"wecom-{chatid}", system, self._qa_tools())
-        with self._sessions_lock:
-            self._sessions[chatid] = [session, time.time()]
-        return session
+        return self.sessions.get(chatid, lambda: self.bridge.begin_session(
+            f"wecom-{chatid}", self.qna_system or QNA_SYSTEM, self._qa_tools()))
 
     def _qa_tools(self) -> list[dict]:
         from .qa_tools import build_qa_tools

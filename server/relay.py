@@ -13,6 +13,10 @@
 
 设备身份：握手帧可带 "deviceId" / "deviceName"（模块按「微信 wxid + ANDROID_ID」派生）。
 绑定后，该连接上报的消息都会打上 deviceId，落库与去重按设备分开。
+
+能力声明（预留）：握手帧可带 "caps": ["imageUrl", ...]。声明了 imageUrl 的模块能处理
+下行指令里的 {"imageUrl": "/images/<file>"}：用自己配置的服务器地址与 token 下载这张图再发送
+（服务器 → 手机的图片传输）。没声明的设备不会收到带 imageUrl 的指令。
 """
 import collections
 import hmac
@@ -52,20 +56,26 @@ class RelayListener:
         self.on_send_status = None
 
     def send(self, talker: str, content: str, device_id: str | None = None,
-             image_path: str | None = None) -> str:
+             image_path: str | None = None, image_url: str | None = None) -> str:
         """下发一条发送指令；入队成功返回指令 id，失败返回空串（后续由模块 ack 时取走）。
 
         image_path 非空时下发图片发送指令（模块走 SendImgProxyUI 相册链路），content 可为空。
+        image_url 为服务器上的图片（相对路径 /images/<file>），只能定向给握手声明了 imageUrl 能力的设备。
         device_id 非空时只投给该设备（指令带 deviceId，模块端也会二次校验）。
         以 "_" 开头的字段是服务端内部记录，下发前去掉。
         """
         image_path = (image_path or "").strip()
-        if not talker or (not content and not image_path):
+        image_url = (image_url or "").strip()
+        if not talker or (not content and not image_path and not image_url):
+            return ""
+        if image_url and (not device_id or "imageUrl" not in self.caps(device_id)):
             return ""
         send_id = uuid.uuid4().hex[:12]
         item = {"talker": talker, "content": content, "_id": send_id, "_at": int(time.time() * 1000)}
         if image_path:
             item["imagePath"] = image_path
+        if image_url:
+            item["imageUrl"] = image_url
         did = str(device_id or "").strip()
         dropped = []
         with self._outbox_lock:
@@ -124,6 +134,12 @@ class RelayListener:
         with self._lock:
             return len(self._clients)
 
+    def caps(self, device_id: str | None) -> set[str]:
+        """该设备当前在线连接声明的能力（多条连接取并集）；离线为空集。"""
+        did = str(device_id or "").strip()
+        with self._lock:
+            return {c for info in self._clients.values() if info.get("device_id") == did for c in info.get("caps") or ()}
+
     def devices(self) -> list[dict]:
         """当前已连接设备（按 deviceId 合并同一设备的重复连接）。"""
         with self._lock:
@@ -136,7 +152,9 @@ class RelayListener:
                 "remote": info.get("remote") or "",
                 "connectedAt": info.get("connectedAt") or 0,
                 "count": 0,
+                "caps": [],
             })
+            item["caps"] = sorted(set(item["caps"]) | set(info.get("caps") or ()))
             if not item["deviceName"] and info.get("device_name"):
                 item["deviceName"] = info["device_name"]
             if info.get("connectedAt") and (not item["connectedAt"] or info["connectedAt"] < item["connectedAt"]):
@@ -163,9 +181,11 @@ class RelayListener:
             return None
         if self.token and not hmac.compare_digest(str(msg.get("token") or ""), self.token):
             return None
+        caps = msg.get("caps") if isinstance(msg.get("caps"), list) else []
         return {
             "device_id": str(msg.get("deviceId") or "").strip(),
             "device_name": str(msg.get("deviceName") or "").strip(),
+            "caps": sorted({str(c) for c in caps if isinstance(c, str) and c.strip()})[:32],
         }
 
     def _serve(self, conn: socket.socket, addr):

@@ -531,6 +531,13 @@ class QuoteLedger:
                     and (device is None or device == (event["source"].get("deviceId") or ""))][:limit]
 
 
+def contract_key(value) -> str:
+    """合约归一：CU2611 / 沪铜2611 / 2611 都按月份 2611 比较；其他写法原样（去空白、大写）。"""
+    text = re.sub(r"\s+", "", str(value or "")).upper()
+    m = re.search(r"(\d{4})$", text)
+    return m.group(1) if m else text
+
+
 def compare_quotes(rows: list[dict], requirements: dict) -> dict:
     """Only rank independently priced, condition-compatible quotes within a group."""
     result = {"groups": [], "needs_confirmation": [], "excluded": []}
@@ -609,7 +616,7 @@ def compare_quotes(rows: list[dict], requirements: dict) -> dict:
             at = timestamp(benchmark.get("at"))
             base = number(benchmark.get("price"))
             if (not isinstance(benchmark, dict) or not d.get("benchmark") or benchmark.get("name") != d["benchmark"]
-                    or benchmark.get("contract") != d.get("contract") or not benchmark.get("source")
+                    or contract_key(benchmark.get("contract")) != contract_key(d.get("contract")) or not benchmark.get("source")
                     or not at or at > as_of or as_of - at > 300000 or base is None):
                 missing.append("缺少同基准同合约、五分钟内且有来源的价格，不能换算")
             else:

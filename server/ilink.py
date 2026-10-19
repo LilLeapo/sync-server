@@ -39,6 +39,8 @@ import threading
 import time
 import uuid
 
+from .agent_sessions import SessionManager, session_settings, sessions_dir
+
 DEFAULT_CREDS = os.path.join("data", "ilink", "creds.json")
 TEXT_LIMIT = 20000
 
@@ -173,8 +175,10 @@ class ILinkBot:
         self._load_state()
 
         self._push_q: "queue.Queue[tuple]" = queue.Queue()
-        self._sessions: dict[str, list] = {}
-        self._sessions_lock = threading.Lock()
+        self.sessions = SessionManager(
+            "ilink-" + re.sub(r"[^A-Za-z0-9_.@-]", "_", os.path.splitext(os.path.basename(self.credentials_file))[0]),
+            ttl=self.qna_session_ttl, persist_dir=sessions_dir(data_dir, bridge),
+            max_sessions=int(session_settings(bridge).get("max_sessions") or 500), log=lambda m: self.log(m))
         self._warned_no_bridge = False
 
         if self.push_enabled:
@@ -350,6 +354,7 @@ class ILinkBot:
                                       "sender_id": {"open_id": user}}}}
         if api is not None:
             api._set_event(event, text)
+            api.sessions, api.session_key = self.sessions, user
 
         # 1) 插件消息钩子
         if self.plugin_host:
@@ -426,17 +431,8 @@ class ILinkBot:
 
     def _get_session(self, user: str):
         from .pi_bridge import QNA_SYSTEM
-        with self._sessions_lock:
-            entry = self._sessions.get(user)
-            if entry and time.time() - entry[1] < self.qna_session_ttl:
-                entry[1] = time.time()
-                return entry[0]
-        system = self.qna_system or QNA_SYSTEM
-        session = self.bridge.begin_session(
-            f"ilink-{self.account_id}-{user}", system, self._qa_tools())
-        with self._sessions_lock:
-            self._sessions[user] = [session, time.time()]
-        return session
+        return self.sessions.get(user, lambda: self.bridge.begin_session(
+            f"ilink-{self.account_id}-{user}", self.qna_system or QNA_SYSTEM, self._qa_tools()))
 
     def _qa_tools(self) -> list[dict]:
         from .qa_tools import build_qa_tools

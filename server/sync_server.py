@@ -22,7 +22,7 @@ try:
     from .store import Store, QuoteLog, device_id_of
     from .device_settings import DEFAULTS as DEVICE_DEFAULTS, DeviceSettings
     from .qa_tools import tool_catalog
-    from . import quote_agent, pi_bridge, bot_plugins, wechat_reply
+    from . import agent_sessions, qa_tools, quote_agent, pi_bridge, bot_plugins, wechat_reply
     from . import feishu as feishu_mod
     from . import dingtalk as dingtalk_mod
     from . import wecom as wecom_mod
@@ -33,7 +33,7 @@ except ImportError:  # 允许 python3 server/sync_server.py 直接运行
     from server.store import Store, QuoteLog, device_id_of
     from server.device_settings import DEFAULTS as DEVICE_DEFAULTS, DeviceSettings
     from server.qa_tools import tool_catalog
-    from server import quote_agent, pi_bridge, bot_plugins, wechat_reply
+    from server import agent_sessions, qa_tools, quote_agent, pi_bridge, bot_plugins, wechat_reply
     from server import feishu as feishu_mod
     from server import dingtalk as dingtalk_mod
     from server import wecom as wecom_mod
@@ -211,6 +211,7 @@ class Handler(BaseHTTPRequestHandler):
             item["online"] = True
             item["remote"] = online.get("remote") or ""
             item["connectedAt"] = online.get("connectedAt") or 0
+            item["caps"] = online.get("caps") or []
         # 待取走的下行指令：设备离线时会在服务端排队
         pending = listener.pending() if listener is not None else {"global": {"count": 0, "oldestAt": 0}, "devices": {}}
         for did, info in pending["devices"].items():
@@ -462,6 +463,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/replies":
             if self._require_auth():
                 self._handle_replies()
+        elif path == "/api/agent/sessions":
+            if self._require_auth():
+                self._json(200, {"ok": True, "sessions": agent_sessions.all_stats()})
         elif path == "/api/stats":
             if self._require_auth():
                 self._handle_stats()
@@ -516,8 +520,23 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_reply_set()
         elif path == "/api/device-settings":
             self._handle_device_settings_set()
+        elif path == "/api/agent/sessions/reset":
+            self._handle_session_reset()
         else:
             self._handle_post()
+
+    def _handle_session_reset(self):
+        """清空一个 Agent 会话：{"namespace":"wechat","key":"<deviceId>|<roomId>"}（取值见 GET /api/agent/sessions）。"""
+        try:
+            body = json.loads(self._read_body().decode("utf-8", "replace"))
+        except Exception:
+            self._json(400, {"ok": False, "error": "invalid json"})
+            return
+        if not isinstance(body, dict) or not body.get("namespace") or not body.get("key"):
+            self._json(400, {"ok": False, "error": "missing namespace/key"})
+            return
+        done = agent_sessions.reset(str(body["namespace"]), str(body["key"]))
+        self._json(200, {"ok": True, "reset": done})
 
     def _handle_send(self):
         """让服务端安排一条消息发送：{"talker":"xxx@chatroom","content":"..."}。
@@ -538,11 +557,15 @@ class Handler(BaseHTTPRequestHandler):
         talker = str(msg.get("talker") or "").strip()
         content = str(msg.get("content") or "")
         image_path = str(msg.get("imagePath") or "").strip()
+        image_url = str(msg.get("imageUrl") or "").strip()
         device = str(msg.get("device") or "").strip()
-        if not talker or (not content and not image_path):
+        if not talker or (not content and not image_path and not image_url):
             self._json(400, {"ok": False, "error": "missing talker/content"})
             return
-        send_id = listener.send(talker, content, device or None, image_path or None)
+        if image_url and (not device or "imageUrl" not in listener.caps(device)):
+            self._json(400, {"ok": False, "error": "imageUrl needs a device whose module declares caps:[\"imageUrl\"]"})
+            return
+        send_id = listener.send(talker, content, device or None, image_path or None, image_url or None)
         self._json(200, {"ok": True, "queued": True, "sendId": send_id, "device": device,
                          "clients": listener.client_count()})
 
@@ -590,6 +613,8 @@ def main():
     # 插件主机（可扩展性落点）
     plugins = bot_plugins.PluginHost(args.plugins_dir)
     plugins.load()
+    # Agent 工具：联网工具（web_search / futures_quote，按 agent.config.json）+ 插件注册的工具
+    qa_tools.configure(agent_cfg, list(plugins.agent_tools.values()))
 
     server = ThreadingHTTPServer((args.bind, args.port), Handler)
     server.store = store
@@ -642,17 +667,25 @@ def main():
         args.agent_config, args.data_dir,
         on_quote=on_quote or None, bridge=bridge, settings=device_settings)
 
-    def _downlink(talker: str, content: str, device_id: str = "") -> str:
+    def _downlink(talker: str, content: str, device_id: str = "", image_path=None, image_url=None) -> str:
         listener = getattr(server, "relay_listener", None)
         if listener is None:
             return ""
-        return listener.send(talker, content, device_id or None)
+        return listener.send(talker, content, device_id or None, image_path, image_url)
 
+    def _device_caps(device_id: str) -> set:
+        listener = getattr(server, "relay_listener", None)
+        return listener.caps(device_id) if listener is not None else set()
+
+    session_cfg = (agent_cfg or {}).get("session") or {}
     server.wechat_replier = (
         wechat_reply.WechatReplier(
             bridge, _downlink, os.path.join(args.data_dir, "reply_switch.json"),
             store=store, quote_log=quote_log, settings=device_settings,
-            log_path=os.path.join(args.data_dir, "replies.json"))
+            log_path=os.path.join(args.data_dir, "replies.json"),
+            session_ttl=float(session_cfg.get("wechat_ttl") or wechat_reply.DEFAULT_SESSION_TTL),
+            sessions_dir=agent_sessions.sessions_dir(args.data_dir, bridge),
+            max_sessions=int(session_cfg.get("max_sessions") or 500), device_caps=_device_caps)
         if bridge is not None else None)
 
     if args.socket_port > 0:

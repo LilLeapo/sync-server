@@ -25,6 +25,8 @@ import time
 import urllib.parse
 import urllib.request
 
+from .agent_sessions import SessionManager, session_settings, sessions_dir
+
 DINGTALK_ROBOT_BASE = "https://oapi.dingtalk.com/robot/send"
 TEXT_LIMIT = 8000
 MENTION_RE = re.compile(r"@_user_\d+|@_all")
@@ -111,8 +113,9 @@ class DingTalkBot:
 
         self._seen_sigs = self._load_state()
         self._push_q: "queue.Queue[tuple]" = queue.Queue()
-        self._sessions: dict[str, list] = {}
-        self._sessions_lock = threading.Lock()
+        self.sessions = SessionManager(
+            "dingtalk", ttl=self.qna_session_ttl, persist_dir=sessions_dir(data_dir, bridge),
+            max_sessions=int(session_settings(bridge).get("max_sessions") or 500), log=lambda m: self.log(m))
         self.pushed = 0
         self.ws_connected = False
         self.ws_error = ""
@@ -264,6 +267,8 @@ class DingTalkBot:
             if entry:
                 self.log(f"command /{name} from {conv_id}")
                 api = self.plugin_host.spawn_api() if self.plugin_host else None
+                if api is not None:
+                    api.sessions, api.session_key = self.sessions, conv_id
                 out = self.plugin_host.run_command(name, args.strip(), api)
                 if out:
                     reply(out)
@@ -294,16 +299,8 @@ class DingTalkBot:
 
     def _get_session(self, conv_id: str):
         from .pi_bridge import QNA_SYSTEM
-        with self._sessions_lock:
-            entry = self._sessions.get(conv_id)
-            if entry and time.time() - entry[1] < self.qna_session_ttl:
-                entry[1] = time.time()
-                return entry[0]
-        system = self.qna_system or QNA_SYSTEM
-        session = self.bridge.begin_session(f"dingtalk-{conv_id}", system, self._qa_tools())
-        with self._sessions_lock:
-            self._sessions[conv_id] = [session, time.time()]
-        return session
+        return self.sessions.get(conv_id, lambda: self.bridge.begin_session(
+            f"dingtalk-{conv_id}", self.qna_system or QNA_SYSTEM, self._qa_tools()))
 
     def _qa_tools(self) -> list[dict]:
         from .qa_tools import build_qa_tools

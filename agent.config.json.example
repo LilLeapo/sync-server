@@ -4,5 +4,30 @@
   "base_url": "https://your-openai-compatible-endpoint/v1",
   "api_key": "sk-...",
   "model": "your-vision-capable-model",
-  "timeout": 90
+  "timeout": 90,
+
+  "session": {
+    "wechat_ttl": 7200,
+    "max_sessions": 500,
+    "persist": true
+  },
+
+  "context": {
+    "budget_chars": 24000,
+    "keep_recent_turns": 4,
+    "tool_result_chars": 6000,
+    "old_tool_result_chars": 800,
+    "max_tool_calls": 8,
+    "turn_timeout": 180
+  },
+
+  "web_search": {
+    "provider": "tavily",
+    "api_key": "",
+    "max_results": 5
+  },
+
+  "futures": {
+    "enabled": true
+  }
 }
