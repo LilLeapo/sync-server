@@ -108,8 +108,10 @@ class String(Schema):
     def _check(self, value, path):
         if isinstance(value, bool) or not isinstance(value, (str, int, float)):
             raise SchemaError(f"{path} 应为字符串，收到 {type(value).__name__}")
-        text = value if isinstance(value, str) else format(value, "g") if isinstance(value, float) else str(value)
-        text = text.strip()
+        if isinstance(value, float):  # 不丢精度：110650.5 → "110650.5"，1112000.0 → "1112000"
+            text = str(int(value)) if value.is_integer() else repr(value)
+        else:
+            text = str(value).strip()
         if self._max is not None and len(text) > self._max:
             raise SchemaError(f"{path} 不能超过 {self._max} 字")
         return text
