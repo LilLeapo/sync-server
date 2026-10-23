@@ -1436,7 +1436,8 @@
     const kind = best.msg.imageKind || "full";
     const size = best.imgSize || best.msg.imageSize || best.msg.hdLength;
 
-    const pending = !!rec.pendingOriginal;
+    // pendingOriginal 是拉取缩略图那一刻服务端算的快照；原图作为新记录到达后以组内最佳版本为准
+    const pending = !!rec.pendingOriginal && best.msg.imageKind !== "original";
     let inner;
     if (src) {
       inner = '<img class="msg-img' + (pending ? " img-pending" : "") + '" loading="lazy" alt="图片" src="' + escapeHtml(src) + '"' +
