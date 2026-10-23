@@ -199,7 +199,7 @@ def build_qa_tools(store, quote_log, device: str | None = None, *, sender=None,
                    opt_in: bool = False) -> list[dict]:
     """Expose historical records, replayed state, comparison, evidence, chat history and helpers.
 
-    sender(room_id, room_label, text="", image_path="", server_image="") -> str：提供时加入
+    sender(room_id, room_label, text="", image_path="", server_image="", make_image=None) -> str：提供时加入
     发送消息/图片工具（opt_in，只给微信设备 Agent）。opt_in=False 时不返回任何 opt_in 工具。
     """
 
@@ -489,14 +489,14 @@ def _send_tools(store, device, sender, resolve) -> list[dict]:
         room, name, err = target(params)  # store 为 None 时 resolve 已经报「没有找到群」
         if err:
             return err
+        card = {k: v for k, v in params.items() if k != "room"}
         try:
-            made = maker.make({k: v for k, v in params.items() if k != "room"}, store.data_dir)
+            return sender(room, name, make_image=lambda: maker.make(card, store.data_dir))
         except CardError as e:
             return f"卡片格式不对：{e}。没有制图，也没有发送。"
         except CardFailed as e:
             print(f"[cards] 制图失败 room={room}: {e}", file=sys.stderr)
             return f"制图失败：{e}。没有发送，可以改用文字回复。"
-        return sender(room, name, server_image=made.rel) + "\n" + made.summary()
 
     tools.append(_tool(
         "send_card", "发送数据卡片",

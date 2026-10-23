@@ -40,6 +40,25 @@ def group_alive(pid: int) -> bool:
     return True
 
 
+def gone_within(pid: int, seconds: float) -> bool:
+    """孤儿进程被杀后由 init 收尸，要等一会儿才查不到。"""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def kill_quietly(pid: int):
+    try:
+        os.kill(pid, 9)
+    except ProcessLookupError:
+        pass
+
+
 class TestFakeChrome(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -104,12 +123,18 @@ class TestFakeChrome(unittest.TestCase):
         self.assertFalse(group_alive(run["pid"]), "hung chrome killed by process group")
         self.assertFalse(os.path.exists(profile_of(run)), "profile removed after timeout")
 
-    def test_crash_message_carries_stderr_tail(self):
+    def test_crash_message_carries_stderr_tail_and_leftover_children_are_killed(self):
         self.assertIn("libnss3.so", self.fail_with("crash"))
+        [run] = self.runs()
+        self.addCleanup(kill_quietly, run["child"])
+        self.assertTrue(gone_within(run["child"], 3), "a child that outlived chrome is killed with its group")
 
     def test_cdp_error_and_non_png_are_render_errors(self):
         self.assertIn("fake failure", self.fail_with("cdp_error"))
         self.assertIn("PNG", self.fail_with("notpng"))
+
+    def test_content_wider_than_the_element_is_refused(self):
+        self.assertIn("内容超出卡片宽度", self.fail_with("wide"))
 
     def test_interleaved_events_are_skipped(self):
         os.environ["FAKE_CHROME_MODE"] = "events"
@@ -137,6 +162,23 @@ class TestFakeChrome(unittest.TestCase):
             sys.path.insert(0, {ROOT!r})
             r, w = os.pipe()
             assert max(r, w) < 10, ("expected low fds in a fresh process", r, w)
+            os.close(r)
+            os.close(w)
+            from server.headless_chrome import HeadlessChrome
+            sys.stdout.write(HeadlessChrome({self.binary!r})("<div id=card></div>", "card")[1:4].decode())
+        """)
+        out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=30)
+        self.assertEqual((out.returncode, out.stdout), (0, "PNG"), out.stderr)
+
+    def test_renders_when_pipe_fds_are_above_1024(self):
+        code = textwrap.dedent(f"""
+            import os, resource, sys
+            sys.path.insert(0, {ROOT!r})
+            soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+            resource.setrlimit(resource.RLIMIT_NOFILE, (min(4096, hard), hard))
+            held = [os.open(os.devnull, os.O_RDONLY) for _ in range(1100)]
+            r, w = os.pipe()
+            assert min(r, w) >= 1024, ("expected high fds", r, w)
             os.close(r)
             os.close(w)
             from server.headless_chrome import HeadlessChrome

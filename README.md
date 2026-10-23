@@ -237,7 +237,7 @@ systemctl restart wabtest-sync
 
 - 聊天记录、报价类工具在微信设备 Agent 里只看本设备的数据；飞书等机器人看全部设备，且不提供需手动开启的工具。
 - `send_image` 的 `image_path` 是手机上的路径（`/sdcard/…`、`/storage/…`，由用户在对话里给出）；`server_image` 是聊天记录里 `[图片 img=images/…]` 的服务器图片，走**预留的服务器 → 手机图片传输**：模块握手时声明 `"caps": ["imageUrl"]`，下行指令就带 `"imageUrl": "/images/<file>"`，由模块用自己配置的服务器地址和 token 下载后发送（模块端需另行实现；未声明的设备不会收到）。
-- `send_card`（`server/cards.py` + `server/headless_chrome.py`）：模型给标题和 1-4 节表格，每节声明列名与列类型（`text` / `number` / `change` / `time`），行按列顺序给原始值；千分位、涨跌红绿、北京时间由服务端统一格式化。卡片存到 `data/images/cards/<日期>/`，同一张卡片同一分钟内重试不会重画。每张卡片起一个无头 Chrome（`--remote-debugging-pipe`，不开端口、不联网），默认 20 秒超时（`card.timeout`），`card.chrome` 可指定路径（指定了就只用它）。发送同样要求设备声明 `"caps": ["imageUrl"]`。
+- `send_card`（`server/cards.py` + `server/headless_chrome.py`）：模型给标题和 1-4 节表格，每节声明列名与列类型（`text` / `number` / `change` / `time`），行按列顺序给原始值；千分位、涨跌红绿、北京时间由服务端统一格式化。卡片存到 `data/images/cards/<日期>/`，保留 30 天；同一张卡片同一分钟内重试不会重画。先过发送检查（本轮额度、设备 `imageUrl`）再制图，被拒的发送不会起 Chrome。内容超出卡片宽度时不发图，把原因告诉模型。每张卡片起一个无头 Chrome（`--remote-debugging-pipe`，不开端口、不联网），默认 20 秒超时（`card.timeout`），`card.chrome` 可指定路径（指定了就只用它）。发送同样要求设备声明 `"caps": ["imageUrl"]`。
 - Linux 部署 `send_card`：装 `chromium`（或 `google-chrome-stable`）和中文字体 `fonts-noto-cjk`；以 root 运行时自动加 `--no-sandbox`。装好后运行 `.venv/bin/python -m server.cards selftest /tmp/card.png` 看图，中文显示成方块就是缺字体。
 - 插件可以用 `api.register_agent_tool(...)` 加工具（见下文），会出现在设备设置的工具列表里。
 - 联网工具自测（会联网）：`.venv/bin/python -m server.net_tools futures CU2611`、`TAVILY_API_KEY=tvly-... .venv/bin/python -m server.net_tools search 沪铜 升贴水`。

@@ -266,7 +266,12 @@ class TestSendCard(_SendCase):
 
     def render(self, html, element_id):
         self.renders += 1
+        if "制图会失败" in html:
+            raise RuntimeError("超过 20 秒没有完成")
         return b"\x89PNG\r\n\x1a\nfake"
+
+    def agent_sends(self):
+        return [r for r in self.replier.log.list()[0] if r["kind"] == "agent_send"]
 
     def test_card_reaches_downlink_as_server_image(self):
         self.ask_with([("send_card", CARD)])
@@ -275,9 +280,7 @@ class TestSendCard(_SendCase):
         self.assertRegex(image_url, r"^/images/cards/\d{8}/[0-9a-f]{20}\.png$")
         self.assertTrue(self.store.image_path(image_url.lstrip("/")), "png file exists under the data dir")
         self.assertIn("已排队发送", self.results[0])
-        self.assertIn(f"卡片 {image_url.lstrip('/')}：2 行。", self.results[0])
-        sends = [r for r in self.replier.log.list()[0] if r["kind"] == "agent_send"]
-        self.assertEqual([(r["roomId"], r["status"]) for r in sends], [("2@chatroom", "queued")])
+        self.assertEqual([(r["roomId"], r["status"]) for r in self.agent_sends()], [("2@chatroom", "queued")])
 
     def test_bad_card_is_neither_drawn_nor_sent(self):
         bad = {**CARD, "sections": [{**CARD["sections"][0], "rows": [["陈工"]]}]}
@@ -285,16 +288,26 @@ class TestSendCard(_SendCase):
         self.assertEqual((self.sent, self.renders), ([], 0))
         self.assertIn("卡片格式不对：第1节第1行有 1 格，但 columns 有 2 列。没有制图，也没有发送。", self.results[0])
 
-    def test_device_without_image_url_caps_is_refused(self):
+    def test_device_without_image_url_caps_is_refused_before_drawing(self):
         self.caps = set()
         self.ask_with([("send_card", CARD)])
-        self.assertEqual(self.sent, [])
+        self.assertEqual((self.sent, self.renders), ([], 0))
         self.assertIn("imageUrl", self.results[0])
+        self.assertNotIn("images/cards", self.results[0])
 
-    def test_turn_cap_applies_to_cards(self):
-        self.ask_with([("send_card", CARD)] * (MAX_TURN_SENDS + 1))
-        self.assertEqual(len(self.sent), MAX_TURN_SENDS)
+    def test_turn_cap_applies_to_cards_before_drawing(self):
+        self.ask_with([("send_card", {**CARD, "title": f"铝锭报价{i}"}) for i in range(MAX_TURN_SENDS + 1)])
+        self.assertEqual((len(self.sent), self.renders), (MAX_TURN_SENDS, MAX_TURN_SENDS))
         self.assertIn("上限", self.results[-1])
+        self.assertNotIn("images/cards", self.results[-1])
+
+    def test_failed_drawing_uses_no_quota_and_leaves_no_log(self):
+        self.replier.settings = _Settings(["send_card", "send_message", "list_rooms"])
+        self.ask_with([("send_card", {**CARD, "title": "制图会失败"})]
+                      + [("send_message", {"room": "2@chatroom", "text": str(i)}) for i in range(MAX_TURN_SENDS)])
+        self.assertIn("制图失败：超过 20 秒没有完成", self.results[0])
+        self.assertEqual([text for _, text, *_ in self.sent], [str(i) for i in range(MAX_TURN_SENDS)])
+        self.assertEqual(sorted(r["reply"] for r in self.agent_sends()), [str(i) for i in range(MAX_TURN_SENDS)])
 
     def test_only_when_ticked_and_configured(self):
         self.replier.settings = _Settings(None)

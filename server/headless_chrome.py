@@ -12,7 +12,7 @@ from __future__ import annotations
 import base64
 import json
 import os
-import select
+import selectors
 import shutil
 import signal
 import subprocess
@@ -36,6 +36,10 @@ REMAP = 'exec "$0" "$@" 3<&0 4>&1 0</dev/null 1>/dev/null'
 
 class RenderError(RuntimeError):
     """启动失败、CDP 报错、超时、尺寸异常或截图不是 PNG。消息是简短中文原因加 Chrome stderr 末尾。"""
+
+
+class TooWide(RenderError):
+    """内容比元素宽，截出来会被裁掉。是页面的问题，不是 Chrome 的：消息不带 stderr，调用方可以原样转述。"""
 
 
 def find_chrome(configured: str = "", which=shutil.which) -> str | None:
@@ -108,7 +112,7 @@ class HeadlessChrome:
         if failure is not None:
             reason = (f"超过 {self.timeout_s:g} 秒没有完成" if isinstance(failure, TimeoutError) else
                       str(failure) if isinstance(failure, RenderError) else f"Chrome 通信异常：{failure!r}")
-            raise RenderError(reason + _tail(log)) from failure
+            raise RenderError(reason + ("" if isinstance(failure, TooWide) else _tail(log))) from failure
         return png
 
 
@@ -119,15 +123,20 @@ def _capture(cdp: "_Pipe", html: str, element_id: str, scale: float, max_height_
              deviceScaleFactor=scale, mobile=False)
     frame = cdp.call("Page.getFrameTree", sid)["frameTree"]["frame"]["id"]
     cdp.call("Page.setDocumentContent", sid, frameId=frame, html=html)
+    # 截图只取元素自己的矩形：内容比元素宽（元素或其中的表格被撑出去）就会被裁掉，这里量出溢出的像素
     found = cdp.call("Runtime.evaluate", sid, awaitPromise=True, returnByValue=True, expression=(
-        f"document.fonts.ready.then(() => {{ const r = document.getElementById({json.dumps(element_id)})"
-        ".getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; })"))
+        f"document.fonts.ready.then(() => {{ const e = document.getElementById({json.dumps(element_id)});"
+        " const r = e.getBoundingClientRect();"
+        " const over = [e, ...e.querySelectorAll('table')].map(t => t.scrollWidth - t.clientWidth);"
+        " return [r.x, r.y, r.width, r.height, Math.max(...over)]; })"))
     if "exceptionDetails" in found:
         detail = (found["exceptionDetails"].get("exception") or {}).get("description") or ""
         raise RenderError(f"取不到 #{element_id} 的位置：{detail[:120]}")
-    x, y, w, h = found["result"]["value"]
+    x, y, w, h, overflow = found["result"]["value"]
     if not (0 < w <= VIEWPORT_WIDTH and 0 < h <= max_height_css):
         raise RenderError(f"卡片尺寸异常（{w:g}×{h:g}）")
+    if overflow > 0:
+        raise TooWide(f"内容超出卡片宽度 {overflow:g} px，请减少列数或缩短文字")
     shot = cdp.call("Page.captureScreenshot", sid, format="png", captureBeyondViewport=True,
                     clip={"x": x, "y": y, "width": w, "height": h, "scale": 1})
     png = base64.b64decode(shot["data"])
@@ -188,24 +197,33 @@ class _Pipe:
         left = self.deadline - time.monotonic()
         if left <= 0:
             raise TimeoutError
-        readable, writable, _ = select.select([] if writing else [fd], [fd] if writing else [], [], left)
-        if not (readable or writable):
-            raise TimeoutError
+        with selectors.DefaultSelector() as sel:  # select.select 不认 ≥1024 的 fd
+            sel.register(fd, selectors.EVENT_WRITE if writing else selectors.EVENT_READ)
+            if not sel.select(left):
+                raise TimeoutError
 
 
 def _reap(proc: subprocess.Popen, grace: float):
-    """等 Chrome 自己退出；超过 grace 秒就整组 TERM，再等 1 秒 KILL。"""
+    """等 Chrome 自己退出；超过 grace 秒就整组 TERM，再等 1 秒 KILL。
+
+    最后总是整组 KILL 一次：主进程退出了，它起的渲染进程等可能还在组里。
+    """
     for sig, wait in ((None, grace), (signal.SIGTERM, 1.0), (signal.SIGKILL, None)):
         if sig is not None:
-            try:
-                os.killpg(proc.pid, sig)
-            except ProcessLookupError:
-                pass
+            _killpg(proc.pid, sig)
         try:
             proc.wait(wait)
-            return
+            break
         except subprocess.TimeoutExpired:
             continue
+    _killpg(proc.pid, signal.SIGKILL)
+
+
+def _killpg(pgid: int, sig: int):
+    try:
+        os.killpg(pgid, sig)
+    except ProcessLookupError:
+        pass
 
 
 def _tail(log: str, limit: int = 300) -> str:

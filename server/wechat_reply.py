@@ -30,6 +30,7 @@ import re
 import sys
 import threading
 import time
+from typing import Callable
 
 from .agent_prompts import WECHAT_REPLY_SYSTEM  # noqa: F401  (sync_server 经此引用)
 from .agent_sessions import SessionManager
@@ -444,18 +445,25 @@ class WechatReplier:
         return self.sessions.get(self._key(device_id, room), factory, sig=sig)
 
     def _sender(self, device_id: str):
-        """发送工具的执行端：只在处理 @ 的过程中可用，每轮最多 MAX_TURN_SENDS 条，逐条记进回复记录。"""
-        def send(room_id: str, room_label: str, text: str = "", image_path: str = "", server_image: str = "") -> str:
+        """发送工具的执行端：只在处理 @ 的过程中可用，每轮最多 MAX_TURN_SENDS 条，逐条记进回复记录。
+
+        make_image() 返回服务器图片的相对路径（如 images/cards/…png），在所有检查通过后才调用，
+        这样被拒的发送不会白白制图；它抛的异常原样传给调用方，不占本轮额度，也不记回复记录。
+        """
+        def send(room_id: str, room_label: str, text: str = "", image_path: str = "", server_image: str = "",
+                 make_image: Callable[[], str] | None = None) -> str:
             active = self._active.get(device_id)
             if active is None:
                 return "只能在回复群消息的过程中发送，没有发送。"
             if active["sends"] >= MAX_TURN_SENDS:
                 return f"本轮已代发 {MAX_TURN_SENDS} 条，达到上限，没有发送。"
             image_url = ""
-            if server_image:
+            if server_image or make_image:
                 caps = set(self.device_caps(device_id) or ()) if self.device_caps else set()
                 if "imageUrl" not in caps:
                     return "这台设备的手机模块没有声明支持服务器图片下发（imageUrl），没有发送；可以改用手机上的图片路径。"
+                if make_image:
+                    server_image = make_image()
                 image_url = "/" + server_image.lstrip("/")
             origin = active["msg"]
             label = text or f"[图片] {image_path or server_image}"

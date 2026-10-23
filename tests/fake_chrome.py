@@ -2,16 +2,18 @@
 
     ok         正常应答，截图返回 1×1 PNG；FAKE_CHROME_DELAY 秒后才回截图
     hang       什么都不回，管道关了也不退出
-    crash      往 stderr 写一行后直接退出
+    crash      起一个比自己活得久的子进程（pid 记进日志的 child），往 stderr 写一行后直接退出
     cdp_error  Page.setDocumentContent 返回 CDP 错误
     notpng     截图返回的不是 PNG
     events     每个应答前先插一条事件和一条别的 id 的消息
+    wide       元素里的内容比元素宽
 
 FAKE_CHROME_LOG 指定时，每个进程往里追加一行 JSON：pid、argv、起止时间。
 """
 import base64
 import json
 import os
+import subprocess
 import sys
 import time
 
@@ -39,7 +41,7 @@ def result(method):
     if method == "Page.getFrameTree":
         return {"frameTree": {"frame": {"id": "F1"}}}
     if method == "Runtime.evaluate":
-        return {"result": {"type": "object", "value": [8, 8, 320, 180]}}
+        return {"result": {"type": "object", "value": [8, 8, 320, 180, 156 if MODE == "wide" else 0]}}
     if method == "Page.captureScreenshot":
         time.sleep(float(os.environ.get("FAKE_CHROME_DELAY") or 0))
         return {"data": base64.b64encode(b"GIF89a" if MODE == "notpng" else PNG).decode()}
@@ -63,6 +65,7 @@ def answer(msg):
 def main():
     log()
     if MODE == "crash":
+        log(child=subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"]).pid)
         sys.stderr.write("[fake] error while loading shared libraries: libnss3.so\n")
         sys.exit(3)
     if MODE == "hang":
