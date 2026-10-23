@@ -34,8 +34,10 @@ def tool_hints(names: set[str]) -> str:
     if "compare_quotes" in names:
         lines.append("给采购结论前用 quote_evidence 核对原文；待确认的方案不能当成最低可采购价；基准行情不能编造"
                      + ("，需要时用 futures_quote 查。" if "futures_quote" in names else "。"))
-    if names & {"send_message", "send_image"}:
-        lines.append("send_message / send_image 会真实发到微信群，只在用户明确要求发送或转发时使用。")
+    if names & {"send_message", "send_image", "send_card"}:
+        lines.append("send_message / send_image / send_card 会真实发到微信群，只在用户明确要求发送或转发时使用。")
+    if "send_card" in names:
+        lines.append("要把报价、比较结果或行情做成图时用 send_card；发出后回复一句即可，不要再把表格贴成文字。")
     return ("工具使用要点：\n" + "\n".join("- " + line for line in lines)) if lines else ""
 
 

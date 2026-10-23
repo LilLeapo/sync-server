@@ -29,5 +29,11 @@
 
   "futures": {
     "enabled": true
+  },
+
+  "card": {
+    "enabled": true,
+    "chrome": "",
+    "timeout": 20
   }
 }

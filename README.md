@@ -188,7 +188,7 @@ systemctl restart wabtest-sync
 }
 ```
 
-- 会话、上下文与联网工具等可选段（`session` / `context` / `web_search` / `futures`）见 `agent.config.json.example` 与下文「会话与上下文」「Agent 工具」
+- 会话、上下文、联网工具与数据卡片等可选段（`session` / `context` / `web_search` / `futures` / `card`）见 `agent.config.json.example` 与下文「会话与上下文」「Agent 工具」
 - SDK 安装（可选，建议用 venv）：`python3 -m venv .venv && .venv/bin/pip install pi-agent lark-oapi`，然后用 `.venv/bin/python -m server.sync_server` 启动
 - 文本报价提取走桥（pi 后端 = SDK Agent 运行时）；**图片报价**仍走本服务的原生视觉调用（需视觉模型）
 - 模型输出严格 JSON：`{"events": []}` 或 `{"events": [{"event_type": "quote", "供应商": "...", "项目": "...", "价格": "...", "单位": "...", "数量": "...", "备注": "...", "evidence": "原文片段", "certainty": "explicit", "details": {...}}]}`。仍兼容旧 `has_quote/items` 输出，但缺少条件的旧数据不能直接用于采购排名。
@@ -233,9 +233,12 @@ systemctl restart wabtest-sync
 | `futures_quote` | 新浪财经期货行情（沪铜 `CU2611`、`沪铜主力`、`伦铜` 等），指定合约时附带可直接用于 `compare_quotes` 的 benchmark；`futures.enabled: false` 关闭 |
 | `web_search` / `web_extract` | Tavily 联网搜索 / 读网页正文；配置 `web_search.api_key`（或环境变量 `TAVILY_API_KEY`）后才提供 |
 | `send_message` / `send_image` | **需手动开启**，仅微信设备 Agent：经本设备的微信给已接入的群发文字/图片，每轮最多 3 条，每条记入回复记录（标「代发」） |
+| `send_card` | **需手动开启**，仅微信设备 Agent：把表格数据（报价、比较结果、行情）做成 PNG 卡片，经 `server_image` 发到群里，与上面共用每轮 3 条的额度；本机找得到 Chrome/Chromium 才提供，`card.enabled: false` 关闭 |
 
 - 聊天记录、报价类工具在微信设备 Agent 里只看本设备的数据；飞书等机器人看全部设备，且不提供需手动开启的工具。
 - `send_image` 的 `image_path` 是手机上的路径（`/sdcard/…`、`/storage/…`，由用户在对话里给出）；`server_image` 是聊天记录里 `[图片 img=images/…]` 的服务器图片，走**预留的服务器 → 手机图片传输**：模块握手时声明 `"caps": ["imageUrl"]`，下行指令就带 `"imageUrl": "/images/<file>"`，由模块用自己配置的服务器地址和 token 下载后发送（模块端需另行实现；未声明的设备不会收到）。
+- `send_card`（`server/cards.py` + `server/headless_chrome.py`）：模型给标题和 1-4 节表格，每节声明列名与列类型（`text` / `number` / `change` / `time`），行按列顺序给原始值；千分位、涨跌红绿、北京时间由服务端统一格式化。卡片存到 `data/images/cards/<日期>/`，同一张卡片同一分钟内重试不会重画。每张卡片起一个无头 Chrome（`--remote-debugging-pipe`，不开端口、不联网），默认 20 秒超时（`card.timeout`），`card.chrome` 可指定路径（指定了就只用它）。发送同样要求设备声明 `"caps": ["imageUrl"]`。
+- Linux 部署 `send_card`：装 `chromium`（或 `google-chrome-stable`）和中文字体 `fonts-noto-cjk`；以 root 运行时自动加 `--no-sandbox`。装好后运行 `.venv/bin/python -m server.cards selftest /tmp/card.png` 看图，中文显示成方块就是缺字体。
 - 插件可以用 `api.register_agent_tool(...)` 加工具（见下文），会出现在设备设置的工具列表里。
 - 联网工具自测（会联网）：`.venv/bin/python -m server.net_tools futures CU2611`、`TAVILY_API_KEY=tvly-... .venv/bin/python -m server.net_tools search 沪铜 升贴水`。
 
@@ -370,6 +373,8 @@ server/
   agent_sessions.py 会话管理：取/建、过期、淘汰、落盘恢复、/reset
   tool_schema.py   工具参数 schema（Schemastery 风格）：生成 JSON Schema + 校验规范化
   net_tools.py     联网工具：Tavily 搜索/读网页、新浪期货行情
+  cards.py         数据卡片：卡片参数检查、HTML 模板、出图落盘（send_card）
+  headless_chrome.py 无头 Chrome 截图（每次一个进程，CDP 走管道）
   feishu.py        飞书客户端 + 机器人（推送队列/问答会话/事件验证解密）
   dingtalk.py      钉钉机器人（自定义机器人推送 + Stream 长连接问答）
   wecom.py         企业微信智能机器人（纯标准库 WebSocket 长连接 + 问答 + 主动推送）

@@ -10,8 +10,8 @@
 - room 参数既可以填 roomId，也可以填群名（唯一匹配时自动换成 roomId）。
 - opt_in 工具（发送消息/图片等对外动作）默认不提供：只有 opt_in=True 时才返回，
   设备设置里需要手动勾选。
-- 联网工具（web_search / futures_quote，见 net_tools.py）与插件注册的工具在启动时经
-  configure() 注入。
+- 联网工具（web_search / futures_quote，见 net_tools.py）、数据卡片（send_card，见 cards.py）
+  与插件注册的工具在启动时经 configure() 注入。
 """
 from __future__ import annotations
 
@@ -21,31 +21,34 @@ import json
 import operator
 import os
 import re
+import sys
 import threading
 import time
 from decimal import Decimal, DivisionByZero, InvalidOperation
 
+from .cards import CARD_FIELDS, CardError, CardFailed, build_maker
 from .pi_bridge import _fmt_row
 from .quote_messages import timestamp
 from .quote_rules import QuoteLedger, compare_quotes
 from .skills import list_skills, read_skill
 from .tool_schema import S
 
-# 启动时 configure() 注入；默认没有联网工具与插件工具（测试保持离线）
-_ENV: dict = {"net": [], "plugins": []}
+# 启动时 configure() 注入；默认没有联网工具、插件工具与制图（测试保持离线、不需要 Chrome）
+_ENV: dict = {"net": [], "plugins": [], "cards": None}
 
 _LEDGERS: dict[str, QuoteLedger] = {}
 _LEDGERS_LOCK = threading.Lock()
 
 
 def configure(agent_cfg: dict | None = None, plugin_tools: list[dict] | None = None, *,
-              net_tools: list[dict] | None = None):
-    """注入联网工具（按 agent.config.json）与插件工具（PluginHost.agent_tools）。"""
+              net_tools: list[dict] | None = None, card_maker=None):
+    """注入联网工具与制图（按 agent.config.json；agent_cfg 为 None 时都没有）和插件工具（PluginHost.agent_tools）。"""
     if net_tools is None:
         from .net_tools import build_net_tools
         net_tools = build_net_tools(agent_cfg)
     _ENV["net"] = list(net_tools)
     _ENV["plugins"] = list(plugin_tools or [])
+    _ENV["cards"] = card_maker if card_maker is not None else build_maker(agent_cfg)
 
 
 def shared_ledger(events_path: str | None) -> QuoteLedger:
@@ -466,7 +469,7 @@ def _send_tools(store, device, sender, resolve) -> list[dict]:
             return f"服务器上没有图片 {server_image}（应为聊天记录里 [图片 img=…] 给出的文件）。"
         return sender(room, name, image_path=path, server_image=server_image)
 
-    return [
+    tools = [
         _tool("send_message", "发送消息", "经本设备的微信给某个群发一条文字消息（会真实发出）。只在用户明确要求发送/转发时使用，目标只能是本设备已接入的群；每轮最多 3 条。",
               S.object({"room": S.string().required().description("目标群 roomId 或群名"),
                         "text": S.string().max(1000).required().description("要发送的文字")}),
@@ -478,6 +481,32 @@ def _send_tools(store, device, sender, resolve) -> list[dict]:
                         "server_image": S.string().max(300).description("服务器图片文件，如 images/xxx.jpg")}),
               send_image, opt_in=True),
     ]
+    maker = _ENV["cards"]
+    if maker is None:
+        return tools
+
+    def send_card(params):
+        room, name, err = target(params)  # store 为 None 时 resolve 已经报「没有找到群」
+        if err:
+            return err
+        try:
+            made = maker.make({k: v for k, v in params.items() if k != "room"}, store.data_dir)
+        except CardError as e:
+            return f"卡片格式不对：{e}。没有制图，也没有发送。"
+        except CardFailed as e:
+            print(f"[cards] 制图失败 room={room}: {e}", file=sys.stderr)
+            return f"制图失败：{e}。没有发送，可以改用文字回复。"
+        return sender(room, name, server_image=made.rel) + "\n" + made.summary()
+
+    tools.append(_tool(
+        "send_card", "发送数据卡片",
+        "把表格数据做成图片卡片发到微信群（会真实发出，每轮最多 3 条，与发送消息共用额度）。只在用户要「做成图/发图」时用。"
+        "sections 每节一张表，不能放在一起比较的方案（compare_quotes 的不同组、待确认）分节放；columns 声明列名与类型；"
+        "rows 每行按列顺序给值。number/change 列填工具结果里的原始数字，不要加千分位或换算成「万」；"
+        "time 列填工具返回的原始时间（毫秒时间戳或 ISO 时间）；差价、比值先用 calculate 算。",
+        S.object({"room": S.string().required().description("目标群 roomId 或群名"), **CARD_FIELDS}, loose=True),
+        send_card, opt_in=True))
+    return tools
 
 
 def _catalog_sender(*args, **kwargs):  # pragma: no cover - 只用于列目录

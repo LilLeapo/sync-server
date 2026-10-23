@@ -1,4 +1,4 @@
-"""扩充的 Agent 工具：群名解析、聊天记录、供应商、计算器、联网工具（离线假传输）、发送工具与插件工具。"""
+"""扩充的 Agent 工具：群名解析、聊天记录、供应商、计算器、联网工具（离线假传输）、发送工具、数据卡片与插件工具。"""
 import json
 import os
 import sys
@@ -12,6 +12,8 @@ from server.bot_plugins import PluginHost  # noqa: E402
 from server.net_tools import FRESH_MS, NetToolError, Tavily, build_net_tools, futures_quote, parse_symbol  # noqa: E402
 from server.pi_bridge import ToolGate  # noqa: E402
 from server.agent_context import ContextPolicy  # noqa: E402
+from server.agent_prompts import compose_system  # noqa: E402
+from server.cards import CardMaker  # noqa: E402
 from server.qa_tools import build_qa_tools, calculate, resolve_room, tool_catalog  # noqa: E402
 from server.quote_rules import QuoteLedger, compare_quotes, contract_key  # noqa: E402
 from server.relay import RelayListener  # noqa: E402
@@ -185,7 +187,7 @@ class TestNetTools(unittest.TestCase):
             qa_tools.configure(net_tools=[], plugin_tools=[])
 
 
-class TestSendTools(_StoreCase):
+class _SendCase(_StoreCase):
     def setUp(self):
         super().setUp()
         self.sent = []
@@ -208,6 +210,8 @@ class TestSendTools(_StoreCase):
                                     "senderName": "老板", "content": "@机器人 把报价转到铝锭群", "type": 1,
                                     "msgSvrId": self.svr, "atMe": True, "deviceId": DEV})
 
+
+class TestSendTools(_SendCase):
     def test_send_message_and_image_with_limits_and_log(self):
         self.ask_with([("send_message", {"room": "铝锭交流群", "text": "今日报价见群公告"}),
                        ("send_image", {"room": "2@chatroom", "image_path": "/sdcard/DCIM/a.jpg"}),
@@ -243,6 +247,68 @@ class TestSendTools(_StoreCase):
         self.replier.settings = _Settings(None)
         self.ask_with([("send_message", {"room": "2@chatroom", "text": "x"})])
         self.assertIn("没有名为 send_message", self.results[0])
+        self.assertEqual(self.sent, [])
+
+
+CARD = {"room": "铝锭交流群", "title": "铝锭报价",
+        "sections": [{"columns": [{"name": "供应商"}, {"name": "价格", "kind": "number", "unit": "元/吨"}],
+                      "rows": [["陈工", 23000], ["李四", "电议"]]}]}
+
+
+class TestSendCard(_SendCase):
+    def setUp(self):
+        super().setUp()
+        self.renders = 0
+        qa_tools.configure(net_tools=[], card_maker=CardMaker(self.render))
+        self.addCleanup(qa_tools.configure, net_tools=[], plugin_tools=[])
+        self.replier.settings = _Settings(["send_card", "list_rooms"])
+        self.caps = {"imageUrl"}
+
+    def render(self, html, element_id):
+        self.renders += 1
+        return b"\x89PNG\r\n\x1a\nfake"
+
+    def test_card_reaches_downlink_as_server_image(self):
+        self.ask_with([("send_card", CARD)])
+        [(room, text, device, image_path, image_url)] = self.sent
+        self.assertEqual((room, text, device, image_path), ("2@chatroom", "", DEV, None))
+        self.assertRegex(image_url, r"^/images/cards/\d{8}/[0-9a-f]{20}\.png$")
+        self.assertTrue(self.store.image_path(image_url.lstrip("/")), "png file exists under the data dir")
+        self.assertIn("已排队发送", self.results[0])
+        self.assertIn(f"卡片 {image_url.lstrip('/')}：2 行。", self.results[0])
+        sends = [r for r in self.replier.log.list()[0] if r["kind"] == "agent_send"]
+        self.assertEqual([(r["roomId"], r["status"]) for r in sends], [("2@chatroom", "queued")])
+
+    def test_bad_card_is_neither_drawn_nor_sent(self):
+        bad = {**CARD, "sections": [{**CARD["sections"][0], "rows": [["陈工"]]}]}
+        self.ask_with([("send_card", bad)])
+        self.assertEqual((self.sent, self.renders), ([], 0))
+        self.assertIn("卡片格式不对：第1节第1行有 1 格，但 columns 有 2 列。没有制图，也没有发送。", self.results[0])
+
+    def test_device_without_image_url_caps_is_refused(self):
+        self.caps = set()
+        self.ask_with([("send_card", CARD)])
+        self.assertEqual(self.sent, [])
+        self.assertIn("imageUrl", self.results[0])
+
+    def test_turn_cap_applies_to_cards(self):
+        self.ask_with([("send_card", CARD)] * (MAX_TURN_SENDS + 1))
+        self.assertEqual(len(self.sent), MAX_TURN_SENDS)
+        self.assertIn("上限", self.results[-1])
+
+    def test_only_when_ticked_and_configured(self):
+        self.replier.settings = _Settings(None)
+        self.ask_with([("send_card", CARD)])
+        self.assertIn("没有名为 send_card", self.results[0])
+        self.assertEqual({t["name"]: t["optIn"] for t in tool_catalog()}.get("send_card"), True)
+        tools = build_qa_tools(self.store, self.quote_log, device=DEV, sender=lambda *a, **k: "", opt_in=True)
+        self.assertIn("要把报价、比较结果或行情做成图时用 send_card", compose_system("角色", tools))
+
+        qa_tools.configure(net_tools=[])
+        self.replier.settings = _Settings(["send_card", "list_rooms"])
+        self.ask_with([("send_card", CARD)])
+        self.assertIn("没有名为 send_card", self.results[0], "a ticked send_card disappears without a maker")
+        self.assertNotIn("send_card", {t["name"] for t in tool_catalog()})
         self.assertEqual(self.sent, [])
 
 
