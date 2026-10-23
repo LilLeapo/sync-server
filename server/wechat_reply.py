@@ -436,7 +436,8 @@ class WechatReplier:
             system = WECHAT_REPLY_SYSTEM
             if cfg["prompt"]:
                 system += "\n\n这台设备的职责说明：\n" + cfg["prompt"]
-            system += f"\n当前微信群roomId：{room}。未指定其他群时查询使用这个room。"
+            system += (f"\n当前微信群roomId：{room}。查报价、比价、供应商时默认看本设备所有群（不传 room），"
+                       "用户点名某个群或说「本群」时再传 room；读聊天记录（recent_messages）默认用这个 room。")
             session_id = f"wechat-{device_id}-{room}" if device_id else f"wechat-{room}"
             return self.bridge.begin_session(session_id, system, tools)
 

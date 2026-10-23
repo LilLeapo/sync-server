@@ -34,8 +34,9 @@ def record(text, seq, device, svr=1, room=ROOM, at=NOW):
 
 
 class _Session:
-    def __init__(self, session_id, tools):
+    def __init__(self, session_id, tools, system=""):
         self.session_id = session_id
+        self.system = system
         self.tools = {t["name"]: t["handler"] for t in tools}
         self.asked = []
 
@@ -49,7 +50,7 @@ class _Bridge:
         self.sessions = []
 
     def begin_session(self, session_id, system="", tools=None):
-        sess = _Session(session_id, tools or [])
+        sess = _Session(session_id, tools or [], system)
         self.sessions.append(sess)
         return sess
 
@@ -84,6 +85,13 @@ class TestReplyAgentPerDevice(unittest.TestCase):
         self.assertNotEqual(a.session_id, b.session_id)
         self.assertEqual(len(a.asked), 2)
         self.assertEqual(len(b.asked), 1)
+
+    def test_group_reply_looks_at_quotes_from_all_groups_by_default(self):
+        self.replier.handle(mention(DEV_A, svr=1, room="1@chatroom"))
+        system = self.bridge.sessions[0].system
+        self.assertIn("当前微信群roomId：1@chatroom", system, "the model still knows which group it answers in")
+        self.assertNotIn("未指定其他群时查询使用这个room", system, "quote lookups are no longer pinned to this group")
+        self.assertIn("查报价、比价、供应商时默认看本设备所有群（不传 room）", system)
 
     def test_legacy_session_id_is_unchanged(self):
         self.replier.handle(mention("", svr=1))
