@@ -327,6 +327,17 @@
     white-space: nowrap;
   }
 
+  .row__quote {
+    padding: 0 6px;
+    border-radius: 4px;
+    background: var(--accent-soft);
+    color: var(--accent-ink);
+    font-size: 10px;
+    font-weight: 700;
+    white-space: nowrap;
+    cursor: default;
+  }
+
   .bubble {
     display: inline-block;
     background: var(--card);
@@ -1185,7 +1196,7 @@
           freshQ.forEach((r) => { state.quoteIds.add(r.qseq); state.quotes.push(r); });
           state.quotes.sort((a, b) => a.qseq - b.qseq);
           state.lastQseq = Math.max.apply(null, [state.lastQseq].concat(freshQ.map((r) => r.qseq)));
-          if (state.view === "quotes") renderFeed();
+          if (state.view !== "replies") renderFeed();
         }
       } catch (e) { /* 报价接口失败不影响主状态 */ }
       try {
@@ -1349,6 +1360,7 @@
       html += '<button class="load-earlier" id="loadEarlier">加载更早消息</button>';
     }
     let lastDate = "";
+    const marks = quoteMarks();
     const seenSvr = new Set();
     for (const rec of list) {
       if (isImage(rec)) {
@@ -1366,13 +1378,13 @@
         lastDate = date;
         html += '<div class="date-sep"><span>' + date + "</span></div>";
       }
-      html += rowHtml(rec);
+      html += rowHtml(rec, marks);
     }
     feed.innerHTML = html;
     if (state.stick) scrollBottom();
   }
 
-  function rowHtml(rec) {
+  function rowHtml(rec, marks) {
     const m = rec.msg || {};
     const senderId = m.sender || "unknown";
     const sender = senderLabel(m);
@@ -1386,6 +1398,8 @@
     const devTag = state.selectedDevice !== null
       ? ""
       : '<span class="row__device" title="' + escapeHtml(dev || "无设备标识（升级前数据）") + '">' + escapeHtml(deviceLabel(dev)) + "</span>";
+    const rows = marks.get(msgDisplayKey(rec));
+    const quoteTag = rows ? quoteChipHtml(rows) : "";
     // 头像用稳定的 wxid，保证同一个人在不同群里颜色/字母一致；
     // 标题（hover）在显示名与 wxid 不同时给出真实 ID。
     const senderTitle = sender !== senderId ? ' title="' + escapeHtml(senderId) + '"' : "";
@@ -1396,12 +1410,40 @@
       '<div class="row__meta">' +
       '<span class="row__sender"' + senderTitle + '>' + escapeHtml(sender) + "</span>" +
       '<span title="' + escapeHtml(new Date(t).toLocaleString()) + '">' + fmtTime(t) + "</span>" +
+      quoteTag +
       devTag +
       roomTag +
       "</div>" +
       bodyHtml(rec) +
       "</div></div>"
     );
+  }
+
+  // 消息与报价的对齐键。图片在列表里按 imgKey 合并成一行，展示的可能是缩略图，
+  // 而报价的 msgSeq 指向同图的大图版本，所以图片不能按 seq 对。
+  function msgDisplayKey(rec) {
+    return isImage(rec) && rec.msg.msgSvrId ? imgKey(rec) : "seq:" + rec.seq;
+  }
+
+  // 渲染时现算，不另存索引，避免与 state.quotes 失步
+  function quoteMarks() {
+    const marks = new Map();
+    for (const r of state.quotes) {
+      if (!r.msgSeq || !shownInQuoteTable(r)) continue;
+      const rec = state.bySeq.get(r.msgSeq);
+      const key = rec ? msgDisplayKey(rec) : "seq:" + r.msgSeq;
+      const arr = marks.get(key);
+      if (arr) arr.push(r); else marks.set(key, [r]);
+    }
+    return marks;
+  }
+
+  function quoteChipHtml(rows) {
+    const lines = rows.slice(0, 5).map((r) =>
+      [supplierShort(r["供应商"]), categoryLabel(r).head, priceLabel(r).text].filter(Boolean).join(" "));
+    if (rows.length > 5) lines.push("… 共 " + rows.length + " 条");
+    return '<span class="row__quote" title="' + escapeHtml(lines.join("\n")) + '">报价' +
+      (rows.length > 1 ? " " + rows.length : "") + "</span>";
   }
 
   function bodyHtml(rec) {
@@ -1629,9 +1671,13 @@
 
   /* ---------- 报价视图 ---------- */
 
+  // 没价格的事件（没货、补供应商等）留在事件库给问答用，报价表只列有价格的行
+  function shownInQuoteTable(r) {
+    return !!priceLabel(r).text;
+  }
+
   function visibleQuotes() {
-    // 没价格的事件（没货、补供应商等）留在事件库给问答用，报价表只列有价格的行
-    let list = state.quotes.filter((r) => priceLabel(r).text);
+    let list = state.quotes.filter(shownInQuoteTable);
     if (state.selectedRoom) list = list.filter((r) => r.roomId === state.selectedRoom);
     if (state.selectedDevice !== null) {
       list = list.filter((r) => (r.deviceId == null ? "" : String(r.deviceId)) === state.selectedDevice);
