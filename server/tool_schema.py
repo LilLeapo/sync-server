@@ -108,8 +108,8 @@ class String(Schema):
     def _check(self, value, path):
         if isinstance(value, bool) or not isinstance(value, (str, int, float)):
             raise SchemaError(f"{path} 应为字符串，收到 {type(value).__name__}")
-        if isinstance(value, float):  # 不丢精度：110650.5 → "110650.5"，1112000.0 → "1112000"
-            text = str(int(value)) if value.is_integer() else repr(value)
+        if isinstance(value, float):  # 不丢精度：110650.5 → "110650.5"，1112000.0 → "1112000"，1e23 → "1e+23"
+            text = str(int(value)) if value.is_integer() and abs(value) < 2 ** 53 else repr(value)
         else:
             text = str(value).strip()
         if self._max is not None and len(text) > self._max:

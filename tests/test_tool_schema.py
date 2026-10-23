@@ -18,6 +18,13 @@ class TestStringFromNumber(unittest.TestCase):
         self.assertEqual(text(-0.32), "-0.32")
         self.assertEqual(text(14448.38), "14448.38")
 
+    def test_integral_floats_beyond_exact_range_keep_float_notation(self):
+        text = S.string()
+        self.assertEqual(text(float(2 ** 53 - 1)), "9007199254740991")
+        self.assertEqual(text(-float(2 ** 53 - 1)), "-9007199254740991")
+        self.assertEqual(text(1e23), "1e+23")
+        self.assertEqual(text(float(2 ** 53)), "9007199254740992.0")
+
     def test_ints_and_strings_unchanged(self):
         text = S.string()
         self.assertEqual(text(1792726800000), "1792726800000")
